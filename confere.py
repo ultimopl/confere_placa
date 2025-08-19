@@ -11,7 +11,7 @@ except Exception:
 
 APP_NOME = "Confere Placa"
 APP_VERSAO = "1.1"
-APP_CREDITOS = "Confere Placa\nVersão {0}\nDesenvolvido em Python 3.5 + Tkinter".format(APP_VERSAO)
+APP_CREDITOS = "Confere Placa\nVersão {0}\nDesenvolvido em Python 3.5 + Tkinter \nCriado por Lucas com o Chatgpt 5".format(APP_VERSAO)
 
 class App(tk.Tk):
     def __init__(self, db_inicial=None):
@@ -56,6 +56,9 @@ class App(tk.Tk):
 
         ttk.Button(top, text="Pesquisar", command=self.buscar).pack(side="left", padx=(6, 0))
 
+        # Botão para adicionar nova entrada
+        ttk.Button(top, text="Adicionar…", command=self.abrir_dialogo_adicionar).pack(side="left", padx=(10, 0))
+
         self.var_case = tk.BooleanVar(value=True)
         ttk.Checkbutton(top, text="Ignorar maiúsc./minúsc.", variable=self.var_case).pack(side="left", padx=(12, 0))
 
@@ -88,6 +91,61 @@ class App(tk.Tk):
 
     def mostrar_sobre(self):
         messagebox.showinfo("Sobre", APP_CREDITOS, parent=self)
+
+        messagebox.showinfo("Sobre", APP_CREDITOS, parent=self)
+    def abrir_dialogo_adicionar(self):
+        win = tk.Toplevel(self)
+        win.title("Adicionar placa")
+        win.transient(self)
+        win.grab_set()
+        frm = ttk.Frame(win, padding=12)
+        frm.pack(fill="both", expand=True)
+
+        ttk.Label(frm, text="Placa:").grid(row=0, column=0, sticky="w")
+        var_placa = tk.StringVar()
+        ent_placa = ttk.Entry(frm, textvariable=var_placa, width=20)
+        ent_placa.grid(row=0, column=1, sticky="we", padx=(6,0))
+
+        ttk.Label(frm, text="Observações:").grid(row=1, column=0, sticky="w", pady=(8,0))
+        var_det = tk.StringVar()
+        ent_det = ttk.Entry(frm, textvariable=var_det, width=50)
+        ent_det.grid(row=1, column=1, sticky="we", padx=(6,0), pady=(8,0))
+
+        ttk.Label(frm, text="Status:").grid(row=2, column=0, sticky="w", pady=(8,0))
+        var_status = tk.StringVar(value="autorizado")
+        cb = ttk.Combobox(frm, textvariable=var_status, values=("autorizado", "não autorizado"), state="readonly", width=18)
+        cb.grid(row=2, column=1, sticky="w", padx=(6,0), pady=(8,0))
+
+        btns = ttk.Frame(frm)
+        btns.grid(row=3, column=0, columnspan=2, sticky="e", pady=(12,0))
+        ttk.Button(btns, text="Cancelar", command=win.destroy).pack(side="right")
+        ttk.Button(btns, text="Salvar", command=lambda: self._salvar_nova_entrada(var_placa.get(), var_det.get(), var_status.get(), win)).pack(side="right", padx=(0,8))
+
+        frm.columnconfigure(1, weight=1)
+        ent_placa.focus_set()
+        win.bind("<Return>", lambda e: self._salvar_nova_entrada(var_placa.get(), var_det.get(), var_status.get(), win))
+
+    def _salvar_nova_entrada(self, placa, detalhes, status, win):
+        placa = (placa or "").strip().upper()
+        if not placa:
+            messagebox.showerror("Erro", "Informe a placa.", parent=win)
+            return
+        detalhes = (detalhes or "").strip()
+        status = (status or "").strip()
+        if placa in self.db:
+            if not messagebox.askyesno("Confirmar", "Placa já existe. Substituir?", parent=win):
+                return
+        self.db[placa] = [detalhes, status]
+        #-------Salvar placa no arquivo CSV------
+        file = open(self.csv_path, "a")
+        file.write(f"{placa};{detalhes};{status}\n")
+        file.close()
+        try:
+            win.destroy()
+        except Exception:
+            pass
+        # Atualiza a tabela respeitando filtros atuais
+        self.buscar()
 
     def abrir_csv(self):
         path = filedialog.askopenfilename(title="Selecione o CSV", filetypes=[("CSV", "*.csv"), ("Todos", "*.*")])
