@@ -139,8 +139,11 @@ class App(tk.Tk):
             messagebox.showerror("Erro", "Selecione um arquivo CSV.", parent=win)
             return
         try:
-            file = open(self.csv_path, "a")
-            file.write(f"{placa};{detalhes};{status}\n")
+            file = open(self.csv_path, "w")
+            for placa in self.db.keys():
+                detalhes = self.db[placa][0]
+                status = self.db[placa][1]
+                file.write("" + placa + ";" + detalhes + ";" + status + "\n")
             file.close()
         except Exception as e:
             messagebox.showerror("Erro ao salvar CSV", str(e))
