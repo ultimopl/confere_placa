@@ -1,26 +1,33 @@
-# Python 3.5
-
-
 import csv
 import os
+import re
+from datetime import datetime
 try:
     import tkinter as tk
     from tkinter import ttk, filedialog, messagebox
-except Exception:
+except ImportError:
     raise RuntimeError("Requer Python 3.x com tkinter.")
 
 APP_NOME = "Confere Placa"
-APP_VERSAO = "1.1"
-APP_CREDITOS = "Confere Placa\nVersão {0}\nDesenvolvido em Python 3.5 + Tkinter \nCriado por Lucas com o Chatgpt 5".format(APP_VERSAO)
+APP_VERSAO = "1.3"  # Atualizada com Histórico
+APP_CREDITOS = f"""Confere Placa
+Versão {APP_VERSAO}
+Desenvolvido em Python 3 + Tkinter
+Nova funcionalidade: Histórico de placas pesquisadas"""
+
+STATUS_VALIDOS = ["autorizado", "não autorizado", "para recepção", "para entrega", "autorizado_patio"]
+AUTORIZADO_STATUSES = ["autorizado", "autorizado_patio"]
 
 class App(tk.Tk):
     def __init__(self, db_inicial=None):
         tk.Tk.__init__(self)
-        self.title("{} - v{}".format(APP_NOME, APP_VERSAO))
-        self.geometry("900x550")
-
-        self.db = db_inicial or {}
+        self.title(f"{APP_NOME} - v{APP_VERSAO}")
+        self.geometry("1150x650")
+        self.resizable(True, True)
+        
+        self.db = db_inicial or {}                    # {placa: [detalhes, status, timestamp]}
         self.csv_path = None
+        self.historico = []                           # Lista de (placa, datetime)
 
         self._build_menu()
         self._build_ui()
@@ -28,129 +35,235 @@ class App(tk.Tk):
 
     def _build_menu(self):
         menubar = tk.Menu(self)
-        # Arquivo
         m_arquivo = tk.Menu(menubar, tearoff=0)
         m_arquivo.add_command(label="Abrir CSV…", command=self.abrir_csv)
         m_arquivo.add_separator()
         m_arquivo.add_command(label="Sair", command=self.destroy)
         menubar.add_cascade(label="Arquivo", menu=m_arquivo)
-        # Ajuda
+
         m_ajuda = tk.Menu(menubar, tearoff=0)
         m_ajuda.add_command(label="Sobre", command=self.mostrar_sobre)
         menubar.add_cascade(label="Ajuda", menu=m_ajuda)
+
         self.config(menu=menubar)
 
     def _build_ui(self):
         style = ttk.Style()
-        style.configure("Treeview", font=('Helvetica', 18))
-        top = ttk.Frame(self, padding=8)
+        style.configure("Treeview", font=('Helvetica', 16))
+        style.configure("Treeview.Heading", font=('Helvetica', 12, 'bold'))
+
+        # ==================== PANEL PRINCIPAL ====================
+        main_pane = ttk.PanedWindow(self, orient="horizontal")
+        main_pane.pack(fill="both", expand=True, padx=8, pady=8)
+
+        # ==================== ÁREA ESQUERDA (Tabela + Busca) ====================
+        left_frame = ttk.Frame(main_pane)
+        main_pane.add(left_frame, weight=3)
+
+        # Barra superior
+        top = ttk.Frame(left_frame, padding=8)
         top.pack(fill="x")
 
         ttk.Button(top, text="Abrir CSV…", command=self.abrir_csv).pack(side="left")
-
-        ttk.Label(top, text="Buscar placa:").pack(side="left", padx=(10, 4))
+        
+        ttk.Label(top, text="Buscar placa:").pack(side="left", padx=(15, 5))
         self.var_busca = tk.StringVar()
-        ent = ttk.Entry(top, textvariable=self.var_busca, width=30,font=("verdana", 26))
+        ent = ttk.Entry(top, textvariable=self.var_busca, width=25, font=("verdana", 22))
         ent.pack(side="left")
         ent.bind("<Return>", lambda e: self.buscar())
 
-        ttk.Button(top, text="Pesquisar", command=self.buscar).pack(side="left", padx=(6, 0))
+        ttk.Button(top, text="Pesquisar", command=self.buscar).pack(side="left", padx=(8, 0))
 
-        # Botão para adicionar nova entrada
-        ttk.Button(top, text="Adicionar…", command=self.abrir_dialogo_adicionar).pack(side="left", padx=(10, 0))
+        # Botões de ação
+        ttk.Button(top, text="Adicionar…", command=self.abrir_dialogo_adicionar).pack(side="left", padx=(25, 5))
+        ttk.Button(top, text="Editar", command=self._abrir_dialogo_editar).pack(side="left", padx=5)
+        ttk.Button(top, text="Excluir", command=self._excluir_entrada).pack(side="left", padx=5)
 
         self.var_case = tk.BooleanVar(value=True)
-        ttk.Checkbutton(top, text="Ignorar maiúsc./minúsc.", variable=self.var_case).pack(side="left", padx=(12, 0))
+        ttk.Checkbutton(top, text="Ignorar maiúsc./minúsc.", variable=self.var_case).pack(side="left", padx=(20, 0))
 
         self.var_autorizado = tk.BooleanVar(value=False)
-        ttk.Checkbutton(top, text="Somente autorizadas", variable=self.var_autorizado, command=self.buscar).pack(side="left", padx=(12, 0))
+        ttk.Checkbutton(top, text="Somente autorizadas", variable=self.var_autorizado, 
+                       command=self.buscar).pack(side="left", padx=(15, 0))
 
         self.var_count = tk.StringVar(value="0 resultados")
-        ttk.Label(self, textvariable=self.var_count, padding=(8, 4)).pack(anchor="w")
+        ttk.Label(left_frame, textvariable=self.var_count, padding=(10, 6)).pack(anchor="w")
 
+        # Tabela
         cols = ("placa", "detalhes", "status")
-        self.tree = ttk.Treeview(self, columns=cols, show="headings", selectmode="browse")
-        for c, w, a in (("placa", 120, "w"), ("detalhes", 480, "w"), ("status", 120, "center")):
+        self.tree = ttk.Treeview(left_frame, columns=cols, show="headings", selectmode="browse")
+        
+        for c, w, a in (("placa", 140, "w"), ("detalhes", 520, "w"), ("status", 140, "center")):
             self.tree.heading(c, text=c.capitalize())
             self.tree.column(c, width=w, anchor=a)
 
-        # Cores por status
         self.tree.tag_configure("autorizado", foreground="green")
         self.tree.tag_configure("nao_autorizado", foreground="red")
 
-        vsb = ttk.Scrollbar(self, orient="vertical", command=self.tree.yview)
-        hsb = ttk.Scrollbar(self, orient="horizontal", command=self.tree.xview)
-        self.tree.configure(yscroll=vsb.set, xscroll=hsb.set)
+        vsb = ttk.Scrollbar(left_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscroll=vsb.set)
 
-        self.tree.pack(fill="both", expand=True, padx=8, pady=(0, 4))
-        vsb.place(in_=self.tree, relx=1.0, rely=0, relheight=1.0, anchor="ne")
-        hsb.pack(fill="x", padx=8, pady=(0, 4))
+        self.tree.pack(fill="both", expand=True, padx=5, pady=(0, 5))
+        vsb.pack(side="right", fill="y")
 
         self.var_status = tk.StringVar(value="Pronto.")
-        ttk.Label(self, textvariable=self.var_status, relief="sunken", anchor="w").pack(fill="x", side="bottom")
+        ttk.Label(left_frame, textvariable=self.var_status, relief="sunken", anchor="w", padding=5).pack(fill="x", side="bottom")
 
+        # ==================== ÁREA DIREITA - HISTÓRICO ====================
+        right_frame = ttk.Frame(main_pane, width=280)
+        main_pane.add(right_frame, weight=1)
+
+        ttk.Label(right_frame, text="Histórico de Pesquisas", font=("Helvetica", 12, "bold")).pack(anchor="w", padx=8, pady=(8,4))
+
+        hist_top = ttk.Frame(right_frame)
+        hist_top.pack(fill="x", padx=8, pady=4)
+        ttk.Button(hist_top, text="Limpar Histórico", command=self.limpar_historico).pack(side="right")
+
+        # Lista de Histórico
+        self.hist_tree = ttk.Treeview(right_frame, columns=("placa", "hora"), show="headings", height=20)
+        self.hist_tree.heading("placa", text="Placa")
+        self.hist_tree.heading("hora", text="Hora")
+        self.hist_tree.column("placa", width=110, anchor="w")
+        self.hist_tree.column("hora", width=100, anchor="center")
+
+        hist_vsb = ttk.Scrollbar(right_frame, orient="vertical", command=self.hist_tree.yview)
+        self.hist_tree.configure(yscroll=hist_vsb.set)
+
+        self.hist_tree.pack(fill="both", expand=True, padx=8, pady=4)
+        hist_vsb.pack(side="right", fill="y")
+
+        self.hist_tree.bind("<Double-1>", self._carregar_do_historico)
+
+    def adicionar_ao_historico(self, placa):
+        """Adiciona placa ao histórico com timestamp"""
+        agora = datetime.now()
+        hora_formatada = agora.strftime("%H:%M:%S")
+        self.historico.append((placa, agora))
+        
+        # Atualiza a Treeview do histórico (mais recente primeiro)
+        self.hist_tree.insert("", 0, values=(placa, hora_formatada))
+
+    def limpar_historico(self):
+        if messagebox.askyesno("Limpar Histórico", "Deseja limpar todo o histórico de pesquisas?", parent=self):
+            self.historico.clear()
+            for item in self.hist_tree.get_children():
+                self.hist_tree.delete(item)
+
+    def _carregar_do_historico(self, event=None):
+        selected = self.hist_tree.selection()
+        if not selected:
+            return
+        placa = self.hist_tree.item(selected[0])["values"][0]
+        self.var_busca.set(placa)
+        self.buscar()
+
+    # ==================== RESTO DAS FUNÇÕES (mantidas e ajustadas) ====================
     def mostrar_sobre(self):
         messagebox.showinfo("Sobre", APP_CREDITOS, parent=self)
+
     def abrir_dialogo_adicionar(self):
+        self._abrir_dialogo_edicao(mode="add")
+
+    def _abrir_dialogo_editar(self):
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Aviso", "Selecione uma placa para editar.", parent=self)
+            return
+        values = self.tree.item(selected[0])["values"]
+        self._abrir_dialogo_edicao(mode="edit", placa_atual=values[0], 
+                                  detalhes_atual=values[1], status_atual=values[2])
+
+    def _abrir_dialogo_edicao(self, mode="add", placa_atual="", detalhes_atual="", status_atual="autorizado"):
+        # (mesmo código da versão anterior - mantido igual)
         win = tk.Toplevel(self)
-        win.title("Adicionar placa")
+        win.title("Adicionar Placa" if mode == "add" else "Editar Placa")
         win.transient(self)
         win.grab_set()
-        frm = ttk.Frame(win, padding=12)
+        win.geometry("520x240")
+
+        frm = ttk.Frame(win, padding=15)
         frm.pack(fill="both", expand=True)
 
         ttk.Label(frm, text="Placa:").grid(row=0, column=0, sticky="w")
-        var_placa = tk.StringVar()
-        ent_placa = ttk.Entry(frm, textvariable=var_placa, width=20)
-        ent_placa.grid(row=0, column=1, sticky="we", padx=(6,0))
+        var_placa = tk.StringVar(value=placa_atual)
+        ent_placa = ttk.Entry(frm, textvariable=var_placa, width=20, font=("verdana", 14))
+        ent_placa.grid(row=0, column=1, sticky="we", padx=(10, 0))
+        if mode == "edit":
+            ent_placa.config(state="readonly")
 
-        ttk.Label(frm, text="Observações:").grid(row=1, column=0, sticky="w", pady=(8,0))
-        var_det = tk.StringVar()
+        ttk.Label(frm, text="Observações:").grid(row=1, column=0, sticky="w", pady=(12, 0))
+        var_det = tk.StringVar(value=detalhes_atual)
         ent_det = ttk.Entry(frm, textvariable=var_det, width=50)
-        ent_det.grid(row=1, column=1, sticky="we", padx=(6,0), pady=(8,0))
+        ent_det.grid(row=1, column=1, sticky="we", padx=(10, 0), pady=(12, 0))
 
-        ttk.Label(frm, text="Status:").grid(row=2, column=0, sticky="w", pady=(8,0))
-        var_status = tk.StringVar(value="autorizado")
-        cb = ttk.Combobox(frm, textvariable=var_status, values=("autorizado", "não autorizado","para recepção","para entrega","autorizado_patio"), state="readonly", width=18)
-        cb.grid(row=2, column=1, sticky="w", padx=(6,0), pady=(8,0))
+        ttk.Label(frm, text="Status:").grid(row=2, column=0, sticky="w", pady=(12, 0))
+        var_status = tk.StringVar(value=status_atual)
+        cb = ttk.Combobox(frm, textvariable=var_status, values=STATUS_VALIDOS, state="readonly", width=25)
+        cb.grid(row=2, column=1, sticky="w", padx=(10, 0), pady=(12, 0))
 
         btns = ttk.Frame(frm)
-        btns.grid(row=3, column=0, columnspan=2, sticky="e", pady=(12,0))
-        ttk.Button(btns, text="Cancelar", command=win.destroy).pack(side="right")
-        ttk.Button(btns, text="Salvar", command=lambda: self._salvar_nova_entrada(var_placa.get(), var_det.get(), var_status.get(), win)).pack(side="right", padx=(0,8))
+        btns.grid(row=3, column=0, columnspan=2, sticky="e", pady=(20, 0))
+        ttk.Button(btns, text="Cancelar", command=win.destroy).pack(side="right", padx=(10,0))
+        ttk.Button(btns, text="Salvar", command=lambda: self._salvar_edicao(
+            var_placa.get(), var_det.get(), var_status.get(), win, mode, placa_atual)
+        ).pack(side="right")
 
         frm.columnconfigure(1, weight=1)
-        ent_placa.focus_set()
-        win.bind("<Return>", lambda e: self._salvar_nova_entrada(var_placa.get(), var_det.get(), var_status.get(), win))
+        (ent_placa if mode == "add" else ent_det).focus_set()
 
-    def _salvar_nova_entrada(self, placa, detalhes, status, win):
-        placa = (placa or "").strip().upper()
-        if not placa:
+    def _salvar_edicao(self, placa_nova, detalhes, status, win, mode, placa_antiga=""):
+        placa_nova = (placa_nova or "").strip().upper().replace("-", "")
+        if not placa_nova:
             messagebox.showerror("Erro", "Informe a placa.", parent=win)
             return
+        if not re.match(r"^[A-Z]{3}\d[A-Z0-9]\d{2}$", placa_nova):
+            messagebox.showerror("Erro", "Formato de placa inválido!\nEx: ABC1234 ou ABC1D23", parent=win)
+            return
+
         detalhes = (detalhes or "").strip()
         status = (status or "").strip()
-        if placa in self.db:
-            if not messagebox.askyesno("Confirmar", "Placa já existe. Substituir?", parent=win):
-                return
-        self.db[placa] = [detalhes, status]
-        #---Salvar placa no arquivo CSV------
+
+        if status not in STATUS_VALIDOS:
+            messagebox.showerror("Erro", "Status inválido.", parent=win)
+            return
+
         if not self.csv_path:
-            messagebox.showerror("Erro", "Selecione um arquivo CSV.", parent=win)
+            messagebox.showerror("Erro", "Abra um arquivo CSV primeiro.", parent=win)
             return
-        try:
-            file = open(self.csv_path, "a")
-            file.write(f"{placa};{detalhes};{status}\n")
-            file.close()
-        except Exception as e:
-            messagebox.showerror("Erro ao salvar CSV", str(e))
-            return
-        try:
-            win.destroy()
-        except Exception:
-            pass
-        # Atualiza a tabela respeitando filtros atuais
+
+        self.db[placa_nova] = [detalhes, status, datetime.now().isoformat()]
+
+        self._salvar_csv()
+        win.destroy()
         self.buscar()
+
+    def _excluir_entrada(self):
+        selected = self.tree.selection()
+        if not selected:
+            messagebox.showwarning("Aviso", "Selecione uma placa para excluir.", parent=self)
+            return
+        placa = self.tree.item(selected[0])["values"][0]
+
+        if not messagebox.askyesno("Confirmar", f"Excluir a placa {placa}?", parent=self):
+            return
+
+        if placa in self.db:
+            self.db[placa][1] = "excluido"
+            self.db[placa][2] = datetime.now().isoformat()
+
+        self._salvar_csv()
+        self.buscar()
+
+    def _salvar_csv(self):
+        if not self.csv_path:
+            return
+        try:
+            with open(self.csv_path, "w", encoding="utf-8", newline="") as f:
+                writer = csv.writer(f, delimiter=";")
+                for p, lst in self.db.items():
+                    writer.writerow([p, lst[0], lst[1], lst[2] if len(lst) > 2 else ""])
+        except Exception as e:
+            messagebox.showerror("Erro", f"Erro ao salvar CSV:\n{e}")
 
     def abrir_csv(self):
         path = filedialog.askopenfilename(title="Selecione o CSV", filetypes=[("CSV", "*.csv"), ("Todos", "*.*")])
@@ -158,102 +271,85 @@ class App(tk.Tk):
             return
         try:
             self.db = self._carregar_csv_dict(path)
+            self.csv_path = path
+            self.var_status.set(f"CSV: {os.path.basename(path)} ({len(self.db)} placas)")
+            self.buscar()   # mostra todas ao carregar
         except Exception as e:
-            messagebox.showerror("Erro ao ler CSV", str(e))
-            return
-        self.csv_path = path
-        self.var_status.set("CSV: {0} ({1} placas)".format(os.path.basename(path), len(self.db)))
-        self.var_busca.set("")
-        self._popular_tabela(self._iter_rows(self.db))
+            messagebox.showerror("Erro", f"Falha ao carregar CSV:\n{e}")
 
     def _carregar_csv_dict(self, path):
         data = {}
-        with open(path, "rb") as fbin:
-            sample = fbin.read(4096)
-        encodings = ["utf-8-sig", "utf-8", "latin-1"]
-        last_err = None
-        for enc in encodings:
-            try:
-                with open(path, "r", encoding=enc) as ftxt:
-                    try:
-                        dialect = csv.Sniffer().sniff(sample.decode(enc, errors="ignore"))
-                        ftxt.seek(0)
-                    except Exception:
-                        dialect = csv.excel
-                        ftxt.seek(0)
-                        first = ftxt.readline()
-                        if ";" in first and "," not in first:
-                            dialect = csv.excel
-                            dialect.delimiter = ";"
-                        ftxt.seek(0)
-                    reader = csv.reader(ftxt, dialect)
-                    rows = [r for r in reader if any((c.strip() if c else "") for c in r)]
-                if not rows:
-                    return {}
-                header = [c.strip().lower() for c in rows[0]]
-                has_header = ("placa" in header) or ("detalhes" in header) or ("status" in header)
-                start = 1 if has_header else 0
-                for r in rows[start:]:
-                    placa = (r[0].strip() if len(r) > 0 else "")
-                    if not placa:
-                        continue
-                    detalhes = (r[1].strip() if len(r) > 1 else "")
-                    status = (r[2].strip() if len(r) > 2 else "")
-                    data[placa] = [detalhes, status]
-                return data
-            except Exception as e:
-                last_err = e
-        if last_err:
-            raise last_err
-        return {}
+        with open(path, "r", encoding="utf-8", errors="replace", newline="") as f:
+            reader = csv.reader(f, delimiter=";")
+            for row in reader:
+                if len(row) < 3 or not row[0].strip():
+                    continue
+                placa = row[0].strip().upper()
+                detalhes = row[1].strip() if len(row) > 1 else ""
+                status = row[2].strip() if len(row) > 2 else "não autorizado"
+                ts = row[3].strip() if len(row) > 3 else ""
+                data[placa] = [detalhes, status, ts]
+        return data
 
     def _iter_rows(self, dbdict):
         for placa, lst in dbdict.items():
-            detalhes = lst[0] if len(lst) > 0 else ""
-            status = lst[1] if len(lst) > 1 else ""
-            yield (placa, detalhes, status)
+            if len(lst) > 1 and lst[1] == "excluido":
+                continue
+            yield (placa, lst[0], lst[1] if len(lst) > 1 else "")
 
     def buscar(self):
-        if not self.db:
-            self._popular_tabela([])
-            self.var_status.set("Base vazia.")
+        termo = self.var_busca.get().strip().upper()
+        if not termo:
+            # Se não digitou nada, mostra tudo
+            resultados = list(self._iter_rows(self.db))
+            self._popular_tabela(resultados)
             return
-        termo = self.var_busca.get().strip()
+
+        # Adiciona ao histórico
+        self.adicionar_ao_historico(termo)
+
         ignore_case = self.var_case.get()
-
-        def match(placa):
-            if not termo:
-                return True
-            return (termo.lower() in placa.lower()) if ignore_case else (termo in placa)
-
         somente_aut = self.var_autorizado.get()
+
         resultados = []
-        for placa, (detalhes, status) in self.db.items():
-            if not match(placa):
+        for placa, lst in self.db.items():
+            if len(lst) > 1 and lst[1] == "excluido":
                 continue
-            if somente_aut and (status or "").strip().lower() != "autorizado":
+
+            status = lst[1]
+            detalhes = lst[0]
+
+            # Busca na placa
+            if ignore_case:
+                match = termo.lower() in placa.lower()
+            else:
+                match = termo in placa
+
+            if not match:
                 continue
+
+            if somente_aut and status not in AUTORIZADO_STATUSES:
+                continue
+
             resultados.append((placa, detalhes, status))
+
         self._popular_tabela(resultados)
 
     def _popular_tabela(self, linhas):
         for i in self.tree.get_children():
             self.tree.delete(i)
+
         count = 0
         for placa, detalhes, status in linhas:
-            #-----Define a cor da linha de acordo com o status
-            if (status.strip().lower() == 'autorizado' or status.strip().lower() == 'autorizado_patio'):
-                tag = 'autorizado'
-            else:
-                tag = 'nao_autorizado'
-            #tag = "autorizado" if (status or "").strip().lower() == "autorizado" else "nao_autorizado"
+            tag = "autorizado" if status in AUTORIZADO_STATUSES else "nao_autorizado"
             self.tree.insert("", "end", values=(placa, detalhes, status), tags=(tag,))
             count += 1
-        self.var_count.set("{0} resultado(s)".format(count))
+
+        self.var_count.set(f"{count} resultado(s)")
+
         if self.csv_path:
-            self.var_status.set("Pronto. Fonte: {0}".format(os.path.basename(self.csv_path)))
-        else:
-            self.var_status.set("Pronto.")
+            self.var_status.set(f"Pronto • {os.path.basename(self.csv_path)}")
+
 
 if __name__ == "__main__":
     app = App()
