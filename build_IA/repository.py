@@ -19,7 +19,7 @@ class Repository:
         Loads data from a CSV file.
         """
         if not os.path.exists(file_path):
-            raise FileNotFoundError(f"O arquivo {file_path} não existe.")
+            raise FileNotFoundError("O arquivo {} não existe.".format(file_path))
 
         new_data = {}
         try:
@@ -38,7 +38,7 @@ class Repository:
             self.current_file_path = file_path
             return self.data
         except Exception as e:
-            raise IOError(f"Erro ao carregar CSV: {e}")
+            raise IOError("Erro ao carregar CSV: {}".format(e))
 
     def save(self, data, file_path):
         """
@@ -68,7 +68,7 @@ class Repository:
         except Exception as e:
             if os.path.exists(temp_path):
                 os.remove(temp_path)
-            raise IOError(f"Erro ao salvar CSV (escrita atômica falhou): {e}")
+            raise IOError("Erro ao salvar CSV (escrita atômica falhou): {}".format(e))
 
     def find_by_query(self, query, ignore_case=True, authorized_only=False, authorized_statuses=None):
         """

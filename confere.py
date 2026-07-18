@@ -10,10 +10,7 @@ except ImportError:
 
 APP_NOME = "Confere Placa"
 APP_VERSAO = "1.3"  # Atualizada com Histórico
-APP_CREDITOS = f"""Confere Placa
-Versão {APP_VERSAO}
-Desenvolvido em Python 3 + Tkinter
-Nova funcionalidade: Histórico de placas pesquisadas"""
+APP_CREDITOS = "Confere Placa\nVersão {}\nDesenvolvido em Python 3 + Tkinter\nNova funcionalidade: Histórico de placas pesquisadas".format(APP_VERSAO)
 
 STATUS_VALIDOS = ["autorizado", "não autorizado", "para recepção", "para entrega", "autorizado_patio"]
 AUTORIZADO_STATUSES = ["autorizado", "autorizado_patio"]
@@ -21,7 +18,7 @@ AUTORIZADO_STATUSES = ["autorizado", "autorizado_patio"]
 class App(tk.Tk):
     def __init__(self, db_inicial=None):
         tk.Tk.__init__(self)
-        self.title(f"{APP_NOME} - v{APP_VERSAO}")
+        self.title("{} - v{}".format(APP_NOME, APP_VERSAO))
         self.geometry("1150x650")
         self.resizable(True, True)
         
@@ -244,7 +241,7 @@ class App(tk.Tk):
             return
         placa = self.tree.item(selected[0])["values"][0]
 
-        if not messagebox.askyesno("Confirmar", f"Excluir a placa {placa}?", parent=self):
+        if not messagebox.askyesno("Confirmar", "Excluir a placa {}?".format(placa), parent=self):
             return
 
         if placa in self.db:
@@ -263,7 +260,7 @@ class App(tk.Tk):
                 for p, lst in self.db.items():
                     writer.writerow([p, lst[0], lst[1], lst[2] if len(lst) > 2 else ""])
         except Exception as e:
-            messagebox.showerror("Erro", f"Erro ao salvar CSV:\n{e}")
+            messagebox.showerror("Erro", "Erro ao salvar CSV:\n{}".format(e))
 
     def abrir_csv(self):
         path = filedialog.askopenfilename(title="Selecione o CSV", filetypes=[("CSV", "*.csv"), ("Todos", "*.*")])
@@ -272,10 +269,10 @@ class App(tk.Tk):
         try:
             self.db = self._carregar_csv_dict(path)
             self.csv_path = path
-            self.var_status.set(f"CSV: {os.path.basename(path)} ({len(self.db)} placas)")
+            self.var_status.set("CSV: {} ({} placas)".format(os.path.basename(path), len(self.db)))
             self.buscar()   # mostra todas ao carregar
         except Exception as e:
-            messagebox.showerror("Erro", f"Falha ao carregar CSV:\n{e}")
+            messagebox.showerror("Erro", "Falha ao carregar CSV:\n{}".format(e))
 
     def _carregar_csv_dict(self, path):
         data = {}
@@ -345,10 +342,10 @@ class App(tk.Tk):
             self.tree.insert("", "end", values=(placa, detalhes, status), tags=(tag,))
             count += 1
 
-        self.var_count.set(f"{count} resultado(s)")
+        self.var_count.set("{} resultado(s)".format(count))
 
         if self.csv_path:
-            self.var_status.set(f"Pronto • {os.path.basename(self.csv_path)}")
+            self.var_status.set("Pronto • {}".format(os.path.basename(self.csv_path)))
 
 
 if __name__ == "__main__":

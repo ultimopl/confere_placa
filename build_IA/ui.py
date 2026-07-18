@@ -9,7 +9,7 @@ class UI(tk.Tk):
     def __init__(self, app_instance):
         super().__init__()
         self.app = app_instance
-        self.title(f"{self.app.APP_NAME} - v{self.app.VERSION}")
+        self.title("{} - v{}".format(self.app.APP_NAME, self.app.VERSION))
         self.geometry("1150x650")
         self.resizable(True, True)
 
@@ -146,7 +146,7 @@ class UI(tk.Tk):
         for placa, detalhes, status in rows:
             tag = "autorizado" if status in self.app.AUTHORIZED_STATUSES else "nao_autorizado"
             self.tree.insert("", "end", values=(placa, detalhes, status), tags=(tag,))
-        self.var_count.set(f"{len(rows)} resultado(s)")
+        self.var_count.set("{} resultado(s)".format(len(rows)))
 
     def update_status(self, message):
         self.var_status_msg.set(message)

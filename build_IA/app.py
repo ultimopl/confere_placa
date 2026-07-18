@@ -19,7 +19,7 @@ class App:
         self.repository = Repository(delimiter=";")
         self.ui = UI(self)
         
-        self.credits = f"{self.APP_NAME}\nVersão {self.VERSION}\nArquitetura Refatorada"
+        self.credits = "{}\nVersão {}\nArquitetura Refatorada".format(self.APP_NAME, self.VERSION)
         self.csv_path = None
         self.history_list = []
 
@@ -58,10 +58,10 @@ class App:
         try:
             self.repository.load(path)
             self.csv_path = path
-            self.ui.update_status(f"Pronto • {path.split('/')[-1]}")
+            self.ui.update_status("Pronto • {}".format(path.split('/')[-1]))
             self.on_search_requested()
         except Exception as e:
-            self.ui.show_error("Erro", f"Falha ao carregar: {e}")
+            self.ui.show_error("Erro", "Falha ao carregar: {}".format(e))
 
     def on_add_requested(self):
         self.ui.create_editor_window(mode="add")
@@ -82,13 +82,13 @@ class App:
             return
         
         placa = self.ui.tree.item(selected[0])["values"][0]
-        if self.ui.confirm_action("Confirmar", f"Deseja excluir a placa {placa}?"):
+        if self.ui.confirm_action("Confirmar", "Deseja excluir a placa {}?".format(placa)):
             try:
                 self.repository.delete(placa)
                 self.repository.save(self.repository.get_all(), self.csv_path)
                 self.on_search_requested()
             except Exception as e:
-                self.ui.show_error("Erro", f"Falha ao excluir: {e}")
+                self.ui.show_error("Erro", "Falha ao excluir: {}".format(e))
 
     def on_clear_history(self):
         if self.ui.confirm_action("Limpar Histórico", "Deseja limpar todo o histórico?"):
@@ -119,7 +119,7 @@ class App:
             self.on_search_requested()
             return True
         except Exception as e:
-            self.ui.show_error("Erro", f"Falha ao salvar: {e}")
+            self.ui.show_error("Erro", "Falha ao salvar: {}".format(e))
             return False
 
 if __name__ == "__main__":
