@@ -4,23 +4,18 @@ import shutil
 import tempfile
 from datetime import datetime
 
+
 class Repository:
-    """
-    Handles data persistence using CSV with atomic writes.
-    """
+    # data: {placa: [detalhes, status, timestamp, expires_at]}
 
     def __init__(self, delimiter=";"):
         self.delimiter = delimiter
-        self.data = {}  # {placa: [detalhes, status, timestamp]}
+        self.data = {}
         self.current_file_path = None
 
     def load(self, file_path):
-        """
-        Loads data from a CSV file.
-        """
         if not os.path.exists(file_path):
             raise FileNotFoundError("O arquivo {} não existe.".format(file_path))
-
         new_data = {}
         try:
             with open(file_path, "r", encoding="utf-8", errors="replace", newline="") as f:
@@ -32,8 +27,8 @@ class Repository:
                     detalhes = row[1].strip() if len(row) > 1 else ""
                     status = row[2].strip() if len(row) > 2 else "não autorizado"
                     ts = row[3].strip() if len(row) > 3 else ""
-                    new_data[placa] = [detalhes, status, ts]
-            
+                    expires_at = row[4].strip() if len(row) > 4 else ""
+                    new_data[placa] = [detalhes, status, ts, expires_at]
             self.data = new_data
             self.current_file_path = file_path
             return self.data
@@ -41,27 +36,17 @@ class Repository:
             raise IOError("Erro ao carregar CSV: {}".format(e))
 
     def save(self, data, file_path):
-        """
-        Saves data to a CSV file using atomic write pattern.
-        """
         if not file_path:
             raise ValueError("Caminho do arquivo não fornecido.")
-
-        # Create a temporary file
         fd, temp_path = tempfile.mkstemp(dir=os.path.dirname(file_path), prefix="tmp_")
-        
         try:
-            with os.fdopen(fd, 'w', encoding="utf-8", newline="") as f:
+            with os.fdopen(fd, "w", encoding="utf-8", newline="") as f:
                 writer = csv.writer(f, delimiter=self.delimiter)
                 for placa, values in data.items():
-                    # values: [detalhes, status, timestamp]
-                    row = [placa] + values
-                    # Ensure row has exactly 4 elements for consistency
-                    while len(row) < 4:
+                    row = [placa] + list(values)
+                    while len(row) < 5:
                         row.append("")
-                    writer.writerow(row[:4])
-            
-            # Atomic swap
+                    writer.writerow(row[:5])
             shutil.move(temp_path, file_path)
             self.current_file_path = file_path
             self.data = data.copy()
@@ -70,57 +55,34 @@ class Repository:
                 os.remove(temp_path)
             raise IOError("Erro ao salvar CSV (escrita atômica falhou): {}".format(e))
 
-    def find_by_query(self, query, ignore_case=True, authorized_only=False, authorized_statuses=None):
-        """
-        Searches through the loaded data.
-        """
+    def find_by_query(self, query, ignore_case=True, authorized_only=False,
+                      authorized_statuses=None):
         if authorized_statuses is None:
             authorized_statuses = []
-
         results = []
         query_clean = query.strip().upper()
-
         for placa, values in self.data.items():
-            # values: [detalhes, status, timestamp]
             status = values[1]
             detalhes = values[0]
-
-            # Skip deleted items
             if status == "excluido":
                 continue
-
-            # Search logic
-            match = False
             if not query_clean:
                 match = True
             elif ignore_case:
-                if query_clean in placa:
-                    match = True
+                match = query_clean in placa
             else:
-                if query_clean == placa:
-                    match = True
-
+                match = query_clean == placa
             if not match:
                 continue
-
-            # Filter by authorized status
             if authorized_only and status not in authorized_statuses:
                 continue
-
             results.append((placa, detalhes, status))
-        
         return results
 
-    def add_or_update(self, placa, detalhes, status):
-        """
-        Updates the internal data dictionary.
-        """
-        self.data[placa] = [detalhes, status, datetime.now().isoformat()]
+    def add_or_update(self, placa, detalhes, status, expires_at=""):
+        self.data[placa] = [detalhes, status, datetime.now().isoformat(), expires_at]
 
     def delete(self, placa):
-        """
-        Marks a record as deleted (soft delete).
-        """
         if placa in self.data:
             self.data[placa][1] = "excluido"
             self.data[placa][2] = datetime.now().isoformat()

@@ -1,126 +1,154 @@
-import tkinter as tk
-from tkinter import filedialog
-import datetime
+import json
+import os
 import re
+from datetime import datetime
+
 from repository import Repository
 from ui import UI
 
-class App:
-    """
-    Controller class that manages the flow between UI and Repository.
-    """
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+CONF_PATH = os.path.join(APP_DIR, "..", "app.conf")
 
+
+def _parse_dt(s):
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%dT%H:%M",
+                "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(s, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+class App:
     APP_NAME = "Confere Placa"
-    VERSION = "2.0 (Refactored)"
-    AUTHORIZED_STATUSES = ["autorizado", "autorizado_patio"]
-    STATUS_VALIDOS = ["autorizado", "não autorizado", "para recepção", "para entrega", "autorizado_patio"]
+    VERSION = "3.0"
+    AUTHORIZED_STATUSES = ["autorizado", "autorizado_patio", "autorizado_temp"]
+    STATUS_VALIDOS = [
+        "autorizado", "não autorizado", "para recepção",
+        "para entrega", "autorizado_patio", "autorizado_temp",
+    ]
 
     def __init__(self):
         self.repository = Repository(delimiter=";")
-        self.ui = UI(self)
-        
-        self.credits = "{}\nVersão {}\nArquitetura Refatorada".format(self.APP_NAME, self.VERSION)
         self.csv_path = None
-        self.history_list = []
+        self.history_list = []  # [(placa, time_str), ...]
+        self.credits = "{}\nVersão {}\nArquitetura em abas".format(self.APP_NAME, self.VERSION)
+
+        self.conf_path = os.path.normpath(CONF_PATH)
+        self.config = self._load_config()
+
+        self.ui = UI(self)
 
     def run(self):
+        last_csv = self.config.get("last_csv", "")
+        if last_csv and os.path.exists(last_csv):
+            self._load_csv(last_csv)
         self.ui.mainloop()
 
-    # --- UI Callbacks (Event Handlers) ---
+    # --- CSV ---
 
-    def on_search_requested(self):
-        query = self.ui.var_busca.get().strip().upper()
-        
-        if not query:
-            results = self.repository.find_by_query("", 
-                                                authorized_only=self.ui.var_autorizado.get(),
-                                                authorized_statuses=self.AUTHORIZED_STATUSES)
-            self.ui.update_table(results)
-            return
-
-        now_str = datetime.datetime.now().strftime("%H:%M:%S")
-        self.ui.update_history(query, now_str)
-        self.history_list.append((query, now_str))
-
-        results = self.repository.find_by_query(
-            query,
-            ignore_case=self.ui.var_case.get(),
-            authorized_only=self.ui.var_autorizado.get(),
-            authorized_statuses=self.AUTHORIZED_STATUSES
-        )
-        self.ui.update_table(results)
-
-    def on_open_csv_requested(self):
-        path = filedialog.askopenfilename(title="Selecione o CSV", filetypes=[("CSV", "*.csv"), ("Todos", "*.*")])
-        if not path:
-            return
-        
+    def on_open_csv_requested(self, path):
         try:
-            self.repository.load(path)
-            self.csv_path = path
-            self.ui.update_status("Pronto • {}".format(path.split('/')[-1]))
-            self.on_search_requested()
+            self._load_csv(path)
         except Exception as e:
             self.ui.show_error("Erro", "Falha ao carregar: {}".format(e))
 
-    def on_add_requested(self):
-        self.ui.create_editor_window(mode="add")
+    def _load_csv(self, path):
+        self.repository.load(path)
+        self.csv_path = path
+        self.config["last_csv"] = path
+        self._save_config()
 
-    def on_edit_requested(self):
-        selected = self.ui.tree.selection()
-        if not selected:
-            self.ui.show_warning("Aviso", "Selecione uma placa para editar.")
-            return
-        
-        values = self.ui.tree.item(selected[0])["values"]
-        self.ui.create_editor_window(mode="edit", p=values[0], d=values[1], s=values[2])
+    def csv_label(self):
+        if self.csv_path:
+            return os.path.basename(self.csv_path)
+        return "nenhum arquivo"
 
-    def on_delete_requested(self):
-        selected = self.ui.tree.selection()
-        if not selected:
-            self.ui.show_warning("Aviso", "Selecione uma placa para excluir.")
-            return
-        
-        placa = self.ui.tree.item(selected[0])["values"][0]
-        if self.ui.confirm_action("Confirmar", "Deseja excluir a placa {}?".format(placa)):
-            try:
-                self.repository.delete(placa)
-                self.repository.save(self.repository.get_all(), self.csv_path)
-                self.on_search_requested()
-            except Exception as e:
-                self.ui.show_error("Erro", "Falha ao excluir: {}".format(e))
+    # --- Search ---
 
-    def on_clear_history(self):
-        if self.ui.confirm_action("Limpar Histórico", "Deseja limpar todo o histórico?"):
-            self.history_list.clear()
-            self.ui.clear_history_ui()
+    def search(self, query, ignore_case=True, authorized_only=False):
+        raw = self.repository.find_by_query(
+            query,
+            ignore_case=ignore_case,
+            authorized_only=authorized_only,
+            authorized_statuses=self.AUTHORIZED_STATUSES,
+        )
+        results = []
+        for placa, detalhes, status in raw:
+            record = self.repository.data[placa]
+            expires_at = record[3] if len(record) > 3 else ""
+            expired = self._is_expired(status, expires_at)
+            expires_display = self._format_expiry(expires_at) if status == "autorizado_temp" else ""
+            results.append((placa, detalhes, status, expired, expires_display))
+        return results
 
-    def save_entry(self, placa, detalhes, status):
-        placa_clean = placa.strip().upper().replace("-", "")
+    def _is_expired(self, status, expires_at):
+        if status != "autorizado_temp" or not expires_at:
+            return False
+        dt = _parse_dt(expires_at)
+        if dt is None:
+            return False
+        return dt < datetime.now()
+
+    def _format_expiry(self, expires_at):
+        if not expires_at:
+            return ""
+        dt = _parse_dt(expires_at)
+        if dt is None:
+            return expires_at
+        return dt.strftime("%d/%m/%Y %H:%M")
+
+    # --- Save / Delete ---
+
+    def save_entry(self, placa, detalhes, status, expires_at=None):
+        placa_clean = (placa or "").strip().upper().replace("-", "")
         if not placa_clean:
             self.ui.show_error("Erro", "Informe a placa.")
             return False
-        
         if not re.match(r"^[A-Z]{3}\d[A-Z0-9]\d{2}$", placa_clean):
-             self.ui.show_error("Erro", "Formato de placa inválido!")
-             return False
-
+            self.ui.show_error("Erro", "Formato de placa inválido!\nEx: ABC1234 ou ABC1D23")
+            return False
         if status not in self.STATUS_VALIDOS:
             self.ui.show_error("Erro", "Status inválido.")
             return False
-
         if not self.csv_path:
-            self.ui.show_error("Erro", "Abra um arquivo CSV primeiro.")
+            self.ui.show_error("Erro", "Abra um arquivo CSV primeiro (aba Configurações).")
             return False
-
         try:
-            self.repository.add_or_update(placa_clean, detalhes.strip(), status)
+            self.repository.add_or_update(placa_clean, (detalhes or "").strip(), status,
+                                          expires_at or "")
             self.repository.save(self.repository.get_all(), self.csv_path)
-            self.on_search_requested()
             return True
         except Exception as e:
             self.ui.show_error("Erro", "Falha ao salvar: {}".format(e))
             return False
 
-if __name__ == "__main__":
-    pass
+    def delete_entry(self, placa):
+        try:
+            self.repository.delete(placa)
+            self.repository.save(self.repository.get_all(), self.csv_path)
+        except Exception as e:
+            self.ui.show_error("Erro", "Falha ao excluir: {}".format(e))
+
+    # --- History ---
+
+    def add_history(self, placa):
+        time_str = datetime.now().strftime("%H:%M:%S")
+        self.history_list.append((placa, time_str))
+
+    # --- Config ---
+
+    def _load_config(self):
+        try:
+            with open(self.conf_path, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+
+    def _save_config(self):
+        try:
+            with open(self.conf_path, "w", encoding="utf-8") as f:
+                json.dump(self.config, f, indent=2, ensure_ascii=False)
+        except Exception:
+            pass
