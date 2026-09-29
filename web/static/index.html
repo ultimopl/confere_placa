@@ -1,0 +1,610 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Confere Placa Web</title>
+  <link rel="stylesheet" href="/static/css/style.css">
+</head>
+<body>
+  <!-- Top Navigation Header -->
+  <header class="app-header">
+    <div class="header-left">
+      <div class="brand">
+        <span class="brand-icon">🚗</span>
+        <div class="brand-text">
+          <h1>Confere Placa</h1>
+          <span class="badge-version">v1.0 Web</span>
+        </div>
+      </div>
+      <div id="csv-status-chip" class="chip chip-csv" title="Arquivo de dados ativo">
+        <span class="chip-dot"></span>
+        <span id="csv-name-label">Carregando...</span>
+      </div>
+    </div>
+
+    <div class="header-right">
+      <div id="user-info-chip" class="chip chip-user">
+        <span class="user-avatar" id="user-avatar-initial">A</span>
+        <div class="user-details">
+          <span class="user-name" id="user-name-display">Carregando...</span>
+          <span class="user-role" id="user-role-badge">Admin</span>
+        </div>
+      </div>
+      <button id="btn-change-password" class="btn btn-outline btn-sm" title="Alterar minha senha">
+        🔑 Senha
+      </button>
+      <button id="btn-logout" class="btn btn-outline btn-sm btn-danger-hover" title="Sair do sistema">
+        🚪 Sair
+      </button>
+    </div>
+  </header>
+
+  <!-- Main Navigation Tabs -->
+  <nav class="nav-tabs" role="tablist">
+    <button class="nav-tab active" data-tab="tab-search" role="tab">
+      🔍 Consulta / Portaria
+    </button>
+    <button class="nav-tab admin-only" data-tab="tab-add" role="tab">
+      ➕ Cadastrar Placa
+    </button>
+    <button class="nav-tab admin-only" data-tab="tab-users" role="tab">
+      👥 Usuários
+    </button>
+    <button class="nav-tab" data-tab="tab-config" role="tab">
+      ⚙️ Configurações
+    </button>
+  </nav>
+
+  <!-- Notification Banner -->
+  <div id="global-alert" class="alert hidden" role="alert">
+    <span id="global-alert-msg"></span>
+    <button class="alert-close" onclick="closeAlert()">&times;</button>
+  </div>
+
+  <!-- Main Container -->
+  <main class="main-content">
+    
+    <!-- TAB 1: CONSULTA / PORTARIA -->
+    <section id="tab-search" class="tab-pane active">
+      <div class="search-layout">
+        <div class="search-main">
+          
+          <!-- Search Box -->
+          <div class="search-box-card">
+            <div class="search-input-wrapper">
+              <span class="search-icon">🔎</span>
+              <input 
+                type="text" 
+                id="search-input" 
+                class="search-input" 
+                placeholder="Digite a placa (ex: ABC1234 ou ABC1D23) ou nome..."
+                autofocus
+                autocomplete="off"
+                spellcheck="false"
+              >
+              <button id="btn-search-clear" class="btn-clear hidden" title="Limpar busca">&times;</button>
+            </div>
+
+            <!-- Filters Bar -->
+            <div class="filters-bar">
+              <div class="filter-chips" id="filter-chips-container">
+                <button class="filter-chip active" data-filter="all">Todas as Placas</button>
+                <button class="filter-chip" data-filter="authorized">🟢 Autorizadas</button>
+                <button class="filter-chip" data-filter="temp_all">🟡 Todas Temporárias</button>
+                <button class="filter-chip" data-filter="temp_active">⏱️ Temporárias Ativas</button>
+                <button class="filter-chip" data-filter="temp_expired">⚠️ Temp. Expiradas</button>
+              </div>
+
+              <div class="filter-toggles">
+                <label class="toggle-label" title="Ignorar maiúsculas e minúsculas">
+                  <input type="checkbox" id="chk-ignore-case" checked>
+                  <span>Ignorar Maiúsc/Minúsc</span>
+                </label>
+              </div>
+            </div>
+          </div>
+
+          <!-- Results Summary -->
+          <div class="results-header">
+            <span id="results-count" class="results-count">0 placas encontradas</span>
+            <div class="results-tools">
+              <button id="btn-refresh-search" class="btn btn-sm btn-outline" title="Atualizar listagem">
+                🔄 Atualizar
+              </button>
+            </div>
+          </div>
+
+          <!-- Results Table -->
+          <div class="table-container">
+            <table class="data-table" id="plates-table">
+              <thead>
+                <tr>
+                  <th style="width: 140px;">Placa</th>
+                  <th style="width: 180px;">Veículo</th>
+                  <th>Observações / Motorista</th>
+                  <th style="width: 170px;">Status</th>
+                  <th style="width: 210px;">Validade / Expiração</th>
+                  <th class="admin-only" style="width: 120px; text-align: center;">Ações</th>
+                </tr>
+              </thead>
+              <tbody id="plates-table-body">
+                <tr>
+                  <td colspan="6" class="empty-state">
+                    <div class="empty-message">
+                      <span class="empty-icon">🔍</span>
+                      <p>Digite uma placa ou clique em uma das categorias para buscar.</p>
+                    </div>
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+
+        </div>
+
+        <!-- Search History Sidebar -->
+        <aside class="search-sidebar">
+          <div class="sidebar-card">
+            <div class="sidebar-header">
+              <h3>📜 Histórico de Buscas</h3>
+              <button id="btn-clear-history" class="btn-text-danger btn-sm" title="Limpar histórico">Limpar</button>
+            </div>
+            <ul id="history-list" class="history-list">
+              <li class="history-empty">Nenhuma busca recente.</li>
+            </ul>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- TAB 2: CADASTRAR PLACA (ADMIN) -->
+    <section id="tab-add" class="tab-pane admin-only">
+      <div class="form-container">
+        <div class="form-card">
+          <div class="form-header">
+            <h2>➕ Cadastrar Nova Placa</h2>
+            <p>Preencha os dados do veículo e selecione as permissões de acesso.</p>
+          </div>
+
+          <form id="form-add-plate" class="plate-form">
+            <div class="form-grid">
+              <div class="form-group">
+                <label for="add-placa">Placa do Veículo *</label>
+                <input 
+                  type="text" 
+                  id="add-placa" 
+                  class="form-control plate-input" 
+                  placeholder="ABC1234 ou ABC1D23" 
+                  maxlength="8" 
+                  required
+                >
+                <small class="form-hint">Formato Mercosul ou padrão antigo nacional.</small>
+              </div>
+
+              <div class="form-group">
+                <label for="add-status">Status de Acesso *</label>
+                <select id="add-status" class="form-control" required>
+                  <option value="autorizado">Autorizado</option>
+                  <option value="autorizado_temp">Autorizado Temporário</option>
+                  <option value="autorizado_patio">Autorizado Pátio</option>
+                  <option value="para recepção">Para Recepção</option>
+                  <option value="para entrega">Para Entrega</option>
+                  <option value="não autorizado">Não Autorizado</option>
+                </select>
+              </div>
+            </div>
+
+            <div class="form-grid">
+              <div class="form-group">
+                <label for="add-modelo">Modelo do Veículo</label>
+                <input 
+                  type="text" 
+                  id="add-modelo" 
+                  class="form-control" 
+                  placeholder="Ex: Corolla, Gol, Civic, Onix, Hilux"
+                >
+              </div>
+
+              <div class="form-group">
+                <label for="add-cor">Cor do Veículo</label>
+                <input 
+                  type="text" 
+                  id="add-cor" 
+                  class="form-control" 
+                  placeholder="Ex: Prata, Branco, Preto, Vermelho"
+                >
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="add-detalhes">Observações / Nome do Condutor / Empresa</label>
+              <input 
+                type="text" 
+                id="add-detalhes" 
+                class="form-control" 
+                placeholder="Ex: João da Silva - Empresa ABC - Prestador de Serviço"
+              >
+            </div>
+
+            <!-- Temporary Expiration Box (shown when autorizado_temp selected) -->
+            <div id="add-temp-box" class="temp-config-box hidden">
+              <div class="temp-box-header">
+                <h4>⏱️ Configuração de Autorização Temporária</h4>
+                <p>Defina o período de validade do acesso temporário deste veículo.</p>
+              </div>
+
+              <div class="duration-presets">
+                <span class="preset-label">Atalhos rápidos:</span>
+                <button type="button" class="btn-preset" data-hours="4">+4 Horas</button>
+                <button type="button" class="btn-preset" data-hours="12">+12 Horas</button>
+                <button type="button" class="btn-preset active" data-hours="24">+24 Horas (1 dia)</button>
+                <button type="button" class="btn-preset" data-hours="48">+48 Horas (2 dias)</button>
+                <button type="button" class="btn-preset" data-hours="168">+7 Dias</button>
+              </div>
+
+              <div class="form-group datetime-group">
+                <label for="add-expires-at">Ou selecione data e hora exata de expiração:</label>
+                <input type="datetime-local" id="add-expires-at" class="form-control">
+                <small class="form-hint">Se preenchido, a data exata terá prioridade sobre os atalhos rápidos.</small>
+              </div>
+            </div>
+
+            <div class="form-actions">
+              <button type="submit" class="btn btn-primary">💾 Salvar Placa</button>
+              <button type="button" id="btn-add-clear" class="btn btn-outline">Limpar Campos</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 3: GESTÃO DE USUÁRIOS (ADMIN) -->
+    <section id="tab-users" class="tab-pane admin-only">
+      <div class="users-layout">
+        <div class="section-card">
+          <div class="card-header-flex">
+            <div>
+              <h2>👥 Usuários do Sistema</h2>
+              <p>Gerencie o acesso de porteiros, operadores e administradores.</p>
+            </div>
+            <button id="btn-open-new-user-modal" class="btn btn-primary">
+              ➕ Novo Usuário
+            </button>
+          </div>
+
+          <div class="table-container">
+            <table class="data-table">
+              <thead>
+                <tr>
+                  <th>Usuário</th>
+                  <th>Nome Completo</th>
+                  <th>Papel / Permissão</th>
+                  <th>Data de Cadastro</th>
+                  <th style="width: 120px; text-align: center;">Ações</th>
+                </tr>
+              </thead>
+              <tbody id="users-table-body">
+                <tr><td colspan="5" class="empty-state">Carregando usuários...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- TAB 4: CONFIGURAÇÕES -->
+    <section id="tab-config" class="tab-pane">
+      <div class="config-layout">
+        
+        <!-- Font Size & Display Card (Visible to all users) -->
+        <div class="section-card">
+          <div class="card-header-flex">
+            <div>
+              <h2>👁️ Tamanho da Fonte & Visualização</h2>
+              <p>Ajuste o tamanho do texto para facilitar a leitura na portaria ou em telas distantes.</p>
+            </div>
+            <button type="button" id="btn-reset-font-size" class="btn btn-outline btn-sm" title="Restaurar tamanho padrão">
+              🔄 Restaurar Padrão
+            </button>
+          </div>
+
+          <div class="font-size-grid" id="font-size-selector">
+            <div class="font-size-option active" data-size="16">
+              <span class="font-sample-letter" style="font-size: 1.1rem;">A</span>
+              <span class="font-size-label">Padrão</span>
+              <span class="font-size-sub">100% (16px)</span>
+            </div>
+            <div class="font-size-option" data-size="18">
+              <span class="font-sample-letter" style="font-size: 1.3rem;">A+</span>
+              <span class="font-size-label">Grande</span>
+              <span class="font-size-sub">112% (18px)</span>
+            </div>
+            <div class="font-size-option" data-size="20">
+              <span class="font-sample-letter" style="font-size: 1.5rem;">A++</span>
+              <span class="font-size-label">Muito Grande</span>
+              <span class="font-size-sub">125% (20px)</span>
+            </div>
+            <div class="font-size-option" data-size="22">
+              <span class="font-sample-letter" style="font-size: 1.7rem;">A+++</span>
+              <span class="font-size-label">Extra Grande</span>
+              <span class="font-size-sub">138% (22px)</span>
+            </div>
+          </div>
+
+          <!-- Live Preview -->
+          <div class="font-preview-box">
+            <div style="width: 100%;">
+              <span class="text-muted" style="font-size: 0.8rem; display: block; margin-bottom: 6px;">Exemplo de visualização em tempo real:</span>
+              <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
+                <span class="plate-cell">ABC1D23</span>
+                <span style="font-weight: 600;">João da Silva - Empresa Fornecedora</span>
+                <span class="status-badge status-authorized">🟢 Autorizado</span>
+                <span class="status-badge status-temp-active">⏱️ Temp - Ativo</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Admin Only: Stats & CSV Management -->
+        <div class="admin-only">
+          <!-- Stats Summary -->
+          <div class="stats-grid">
+            <div class="stat-card">
+              <span class="stat-icon">📄</span>
+              <div class="stat-info">
+                <span class="stat-value" id="stat-total">0</span>
+                <span class="stat-label">Total de Placas</span>
+              </div>
+            </div>
+            <div class="stat-card stat-success">
+              <span class="stat-icon">✅</span>
+              <div class="stat-info">
+                <span class="stat-value" id="stat-authorized">0</span>
+                <span class="stat-label">Placas Autorizadas</span>
+              </div>
+            </div>
+            <div class="stat-card stat-warning">
+              <span class="stat-icon">⏱️</span>
+              <div class="stat-info">
+                <span class="stat-value" id="stat-temp-active">0</span>
+                <span class="stat-label">Temporárias Ativas</span>
+              </div>
+            </div>
+            <div class="stat-card stat-danger">
+              <span class="stat-icon">⚠️</span>
+              <div class="stat-info">
+                <span class="stat-value" id="stat-temp-expired">0</span>
+                <span class="stat-label">Temporárias Expiradas</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- CSV Settings Cards -->
+          <div class="config-cards-grid">
+            <!-- Card 1: Local Path -->
+            <div class="section-card">
+              <h3>📂 Arquivo CSV Atual</h3>
+              <p>Selecione ou confirme o caminho do arquivo CSV ativo no servidor.</p>
+
+              <form id="form-csv-path" class="mt-4">
+                <div class="form-group">
+                  <label for="cfg-csv-path">Caminho no Servidor</label>
+                  <input type="text" id="cfg-csv-path" class="form-control" placeholder="/caminho/para/arquivo.csv" required>
+                </div>
+                <button type="submit" class="btn btn-primary">Carregar Arquivo</button>
+              </form>
+            </div>
+
+            <!-- Card 2: Upload CSV -->
+            <div class="section-card">
+              <h3>📤 Enviar Novo Arquivo CSV</h3>
+              <p>Faça upload de um arquivo CSV delimitado por ponto e vírgula (<code>;</code>).</p>
+
+              <form id="form-csv-upload" class="mt-4">
+                <div class="form-group">
+                  <label for="cfg-csv-file">Selecione o arquivo .csv do seu computador</label>
+                  <input type="file" id="cfg-csv-file" class="form-control" accept=".csv" required>
+                </div>
+                <button type="submit" class="btn btn-primary">Enviar e Ativar</button>
+              </form>
+            </div>
+          </div>
+        </div>
+
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ==================== MODALS / DIALOGS ==================== -->
+
+  <!-- Modal: Login -->
+  <dialog id="modal-login" class="modal-dialog">
+    <div class="modal-box modal-login-box">
+      <div class="modal-header">
+        <div class="login-brand">
+          <span class="login-icon">🚗</span>
+          <h2>Confere Placa</h2>
+        </div>
+        <p>Acesse com seu usuário e senha para continuar.</p>
+      </div>
+
+      <div id="login-alert" class="alert alert-danger hidden"></div>
+
+      <form id="form-login" class="mt-4">
+        <div class="form-group">
+          <label for="login-username">Usuário</label>
+          <input type="text" id="login-username" class="form-control" required autofocus autocomplete="username" placeholder="admin ou seu_usuario">
+        </div>
+
+        <div class="form-group">
+          <label for="login-password">Senha</label>
+          <input type="password" id="login-password" class="form-control" required autocomplete="current-password" placeholder="••••••••">
+        </div>
+
+        <div class="modal-footer">
+          <button type="submit" class="btn btn-primary btn-block">Entrar no Sistema</button>
+        </div>
+      </form>
+    </div>
+  </dialog>
+
+  <!-- Modal: Edit Plate -->
+  <dialog id="modal-edit-plate" class="modal-dialog">
+    <div class="modal-box">
+      <div class="modal-header">
+        <h3>✏️ Editar Placa: <span id="edit-placa-title" class="mono-badge"></span></h3>
+        <button class="modal-close" onclick="closeModal('modal-edit-plate')">&times;</button>
+      </div>
+
+      <form id="form-edit-plate" class="mt-4">
+        <input type="hidden" id="edit-placa-val">
+
+        <div class="form-grid">
+          <div class="form-group">
+            <label for="edit-modelo">Modelo do Veículo</label>
+            <input type="text" id="edit-modelo" class="form-control" placeholder="Ex: Corolla">
+          </div>
+          <div class="form-group">
+            <label for="edit-cor">Cor</label>
+            <input type="text" id="edit-cor" class="form-control" placeholder="Ex: Prata">
+          </div>
+        </div>
+
+        <div class="form-group">
+          <label for="edit-detalhes">Observações / Condutor</label>
+          <input type="text" id="edit-detalhes" class="form-control">
+        </div>
+
+        <div class="form-group">
+          <label for="edit-status">Status de Acesso</label>
+          <select id="edit-status" class="form-control" required>
+            <option value="autorizado">Autorizado</option>
+            <option value="autorizado_temp">Autorizado Temporário</option>
+            <option value="autorizado_patio">Autorizado Pátio</option>
+            <option value="para recepção">Para Recepção</option>
+            <option value="para entrega">Para Entrega</option>
+            <option value="não autorizado">Não Autorizado</option>
+          </select>
+        </div>
+
+        <!-- Edit Temp Box -->
+        <div id="edit-temp-box" class="temp-config-box hidden">
+          <div class="temp-box-header">
+            <h4>⏱️ Validade Temporária</h4>
+          </div>
+          <div class="duration-presets">
+            <span class="preset-label">Adicionar horas:</span>
+            <button type="button" class="btn-preset-edit" data-hours="4">+4h</button>
+            <button type="button" class="btn-preset-edit" data-hours="12">+12h</button>
+            <button type="button" class="btn-preset-edit" data-hours="24">+24h</button>
+            <button type="button" class="btn-preset-edit" data-hours="48">+48h</button>
+            <button type="button" class="btn-preset-edit" data-hours="168">+7d</button>
+          </div>
+          <div class="form-group datetime-group">
+            <label for="edit-expires-at">Data e hora limite:</label>
+            <input type="datetime-local" id="edit-expires-at" class="form-control">
+          </div>
+        </div>
+
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline" onclick="closeModal('modal-edit-plate')">Cancelar</button>
+          <button type="submit" class="btn btn-primary">Salvar Alterações</button>
+        </div>
+      </form>
+    </div>
+  </dialog>
+
+  <!-- Modal: Delete Confirmation -->
+  <dialog id="modal-delete-confirm" class="modal-dialog">
+    <div class="modal-box modal-sm">
+      <div class="modal-header">
+        <h3>🗑️ Excluir Placa</h3>
+        <button class="modal-close" onclick="closeModal('modal-delete-confirm')">&times;</button>
+      </div>
+      <p class="modal-body-text">
+        Deseja realmente excluir a placa <strong id="delete-placa-name" class="mono-badge"></strong>?
+        <br><small class="text-muted">A placa receberá o status 'excluído' e não aparecerá nas consultas.</small>
+      </p>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline" onclick="closeModal('modal-delete-confirm')">Cancelar</button>
+        <button type="button" id="btn-confirm-delete" class="btn btn-danger">Sim, Excluir</button>
+      </div>
+    </div>
+  </dialog>
+
+  <!-- Modal: Change Password -->
+  <dialog id="modal-change-password" class="modal-dialog">
+    <div class="modal-box modal-sm">
+      <div class="modal-header">
+        <h3>🔑 Alterar Minha Senha</h3>
+        <button class="modal-close" onclick="closeModal('modal-change-password')">&times;</button>
+      </div>
+
+      <div id="change-pwd-alert" class="alert alert-danger hidden"></div>
+
+      <form id="form-change-password" class="mt-4">
+        <div class="form-group">
+          <label for="pwd-old">Senha Atual</label>
+          <input type="password" id="pwd-old" class="form-control" required autocomplete="current-password">
+        </div>
+        <div class="form-group">
+          <label for="pwd-new">Nova Senha</label>
+          <input type="password" id="pwd-new" class="form-control" minlength="4" required autocomplete="new-password">
+          <small class="form-hint">Mínimo de 4 caracteres.</small>
+        </div>
+        <div class="form-group">
+          <label for="pwd-confirm">Confirmar Nova Senha</label>
+          <input type="password" id="pwd-confirm" class="form-control" minlength="4" required autocomplete="new-password">
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline" onclick="closeModal('modal-change-password')">Cancelar</button>
+          <button type="submit" class="btn btn-primary">Salvar Nova Senha</button>
+        </div>
+      </form>
+    </div>
+  </dialog>
+
+  <!-- Modal: User Create/Edit -->
+  <dialog id="modal-user" class="modal-dialog">
+    <div class="modal-box modal-sm">
+      <div class="modal-header">
+        <h3 id="modal-user-title">👤 Novo Usuário</h3>
+        <button class="modal-close" onclick="closeModal('modal-user')">&times;</button>
+      </div>
+
+      <div id="user-modal-alert" class="alert alert-danger hidden"></div>
+
+      <form id="form-user" class="mt-4">
+        <div class="form-group">
+          <label for="user-input-username">Nome de Usuário (login) *</label>
+          <input type="text" id="user-input-username" class="form-control" required placeholder="ex: portaria1">
+        </div>
+        <div class="form-group">
+          <label for="user-input-name">Nome Completo</label>
+          <input type="text" id="user-input-name" class="form-control" placeholder="ex: João Silva - Portaria Sul">
+        </div>
+        <div class="form-group">
+          <label for="user-input-role">Papel de Acesso *</label>
+          <select id="user-input-role" class="form-control" required>
+            <option value="operador">Operador (Apenas Consulta / Portaria)</option>
+            <option value="admin">Administrador (Controle Total)</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label for="user-input-password" id="user-password-label">Senha *</label>
+          <input type="password" id="user-input-password" class="form-control" minlength="4">
+          <small class="form-hint" id="user-password-hint">Mínimo de 4 caracteres.</small>
+        </div>
+        <div class="modal-footer">
+          <button type="button" class="btn btn-outline" onclick="closeModal('modal-user')">Cancelar</button>
+          <button type="submit" class="btn btn-primary">Salvar Usuário</button>
+        </div>
+      </form>
+    </div>
+  </dialog>
+
+  <script src="/static/js/app.js"></script>
+</body>
+</html>

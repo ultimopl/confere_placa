@@ -1,3 +1,9 @@
 __pycache__/
 *.pyc
+*.pyo
 app.conf
+.venv/
+.pytest_cache/
+web_data/
+*.tmp
+.~lock.*

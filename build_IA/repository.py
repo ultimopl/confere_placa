@@ -28,7 +28,9 @@ class Repository:
                     status = row[2].strip() if len(row) > 2 else "não autorizado"
                     ts = row[3].strip() if len(row) > 3 else ""
                     expires_at = row[4].strip() if len(row) > 4 else ""
-                    new_data[placa] = [detalhes, status, ts, expires_at]
+                    cor = row[5].strip() if len(row) > 5 else ""
+                    modelo = row[6].strip() if len(row) > 6 else ""
+                    new_data[placa] = [detalhes, status, ts, expires_at, cor, modelo]
             self.data = new_data
             self.current_file_path = file_path
             return self.data
@@ -44,9 +46,9 @@ class Repository:
                 writer = csv.writer(f, delimiter=self.delimiter)
                 for placa, values in data.items():
                     row = [placa] + list(values)
-                    while len(row) < 5:
+                    while len(row) < 7:
                         row.append("")
-                    writer.writerow(row[:5])
+                    writer.writerow(row[:7])
             shutil.move(temp_path, file_path)
             self.current_file_path = file_path
             self.data = data.copy()
