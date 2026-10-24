@@ -27,6 +27,7 @@ def setup_test_env(monkeypatch):
     monkeypatch.setattr(web.config, "CONF_PATH", os.path.join(test_dir, "app.conf"))
     monkeypatch.setattr(web.chat_manager, "CHAT_HISTORY_FILE", os.path.join(test_dir, "chat_history.json"))
     monkeypatch.setattr(web.routes.config_routes, "DATA_DIR", os.path.join(test_dir, "web_data"))
+    monkeypatch.setattr(repository, "backup_dir", os.path.join(test_dir, "backups"))
     monkeypatch.setenv("CONFERE_ADMIN_PASSWORD", ADMIN_PW)
     test_csv = os.path.join(test_dir, "test_plates.csv")
 
@@ -531,3 +532,90 @@ def test_corrupt_users_file_is_never_overwritten(client):
 
     with open(web.auth.USERS_FILE, "rb") as f:
         assert f.read() == original
+
+
+# ==================== CSV DATA SAFETY TESTS ====================
+
+def test_backup_before_each_save_with_retention(client, setup_test_env, monkeypatch):
+    monkeypatch.setattr(repository, "MAX_BACKUPS", 3)
+    backup_dir = repository.backup_dir
+    os.makedirs(backup_dir)
+    other = os.path.join(backup_dir, "outro-20260101-000000-000000.csv")  # other file's backup: never pruned
+    open(other, "w").close()
+    with open(setup_test_env["test_csv"], "rb") as f:
+        original = f.read()
+
+    login_helper(client, "admin", ADMIN_PW)
+    for placa in ("AAA1111", "BBB2222", "CCC3333", "DDD4444", "EEE5555"):
+        assert client.post("/api/plates", json={"placa": placa, "status": "autorizado"}).status_code == 200
+
+    backups = sorted(f for f in os.listdir(backup_dir) if f.startswith("test_plates-"))
+    assert len(backups) == 3
+    assert os.path.exists(other)
+    # Oldest kept backup is the state before the 3rd save: original + AAA + BBB
+    with open(os.path.join(backup_dir, backups[0]), encoding="utf-8") as f:
+        content = f.read()
+    assert "BBB2222" in content and "CCC3333" not in content
+
+    # The very first backup (pruned now) would equal the original file; check with a fresh save
+    monkeypatch.setattr(repository, "MAX_BACKUPS", 200)
+    with open(setup_test_env["test_csv"], "wb") as f:
+        f.write(original)
+    client.delete("/api/plates/ABC1234")
+    newest = sorted(f for f in os.listdir(backup_dir) if f.startswith("test_plates-"))[-1]
+    with open(os.path.join(backup_dir, newest), "rb") as f:
+        assert f.read() == original
+
+
+def test_windows_1252_and_bom_csv_load_without_corruption(client, setup_test_env):
+    test_csv = setup_test_env["test_csv"]
+    with open(test_csv, "wb") as f:
+        f.write("ABC1234;João Ônibus;não autorizado;2026-01-01T10:00:00;\n".encode("cp1252"))
+    repository.load(test_csv)
+    login_helper(client, "admin", ADMIN_PW)
+    rec = client.get("/api/plates/ABC1234").json()["plate"]
+    assert rec["detalhes"] == "João Ônibus"
+    assert rec["status"] == "não autorizado"
+
+    # Saving rewrites it as UTF-8, which the desktop apps read
+    client.post("/api/plates", json={"placa": "NEW1A23", "status": "autorizado"})
+    with open(test_csv, encoding="utf-8") as f:
+        assert "João Ônibus;não autorizado" in f.read()
+
+    # Excel "CSV UTF-8" adds a BOM, which must not end up in the first plate
+    with open(test_csv, "wb") as f:
+        f.write("\ufeffABC1234;Teste;autorizado;2026-01-01T10:00:00;\n".encode("utf-8"))
+    repository.load(test_csv)
+    assert "ABC1234" in repository.data
+
+
+def test_external_csv_edits_are_not_overwritten(client, setup_test_env):
+    test_csv = setup_test_env["test_csv"]
+    login_helper(client, "admin", ADMIN_PW)
+
+    # Desktop app (confere.py) adds a plate while the server is running
+    with open(test_csv, "a", encoding="utf-8") as f:
+        f.write("DSK1234;Cadastrado no desktop;autorizado;2026-01-01T10:00:00;\n")
+    assert client.get("/api/plates?q=DSK1234").json()["count"] == 1
+
+    client.post("/api/plates", json={"placa": "WEB1234", "status": "autorizado"})
+    with open(test_csv, encoding="utf-8") as f:
+        content = f.read()
+    assert "DSK1234" in content and "WEB1234" in content
+
+
+def test_unreadable_csv_is_never_overwritten(client, setup_test_env):
+    test_csv = setup_test_env["test_csv"]
+    login_helper(client, "admin", ADMIN_PW)
+    with open(test_csv, "wb") as f:
+        f.write(b"ABC1234;\x81\x8d;autorizado;\n")  # not valid UTF-8 nor Windows-1252
+    with open(test_csv, "rb") as f:
+        bad = f.read()
+
+    # Reads keep serving the last good data; writes refuse to save over the file
+    assert client.get("/api/plates?q=ABC1234").json()["count"] == 1
+    res = client.post("/api/plates", json={"placa": "NEW1234", "status": "autorizado"})
+    assert res.status_code == 400
+    assert "Codificação" in res.json()["detail"]
+    with open(test_csv, "rb") as f:
+        assert f.read() == bad

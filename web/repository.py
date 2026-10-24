@@ -1,4 +1,5 @@
 import csv
+import io
 import os
 import re
 import shutil
@@ -7,7 +8,25 @@ import threading
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple, Any
 
+from web.config import DATA_DIR
+
 PLATE_REGEX = re.compile(r"^[A-Z]{3}\d[A-Z0-9]\d{2}$")
+
+
+def decode_csv_bytes(raw: bytes, file_path: str) -> str:
+    # Excel on Windows often saves CSV as Windows-1252 ("CSV UTF-8" adds a BOM).
+    # Decoding with errors="replace" would turn accents into U+FFFD and the next
+    # save would make that permanent, so fall back to cp1252 or refuse the file.
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        pass
+    try:
+        return raw.decode("cp1252")
+    except UnicodeDecodeError as e:
+        raise ValueError(
+            f"Codificação não reconhecida em {file_path} (esperado UTF-8 ou Windows-1252)."
+        ) from e
 
 
 def parse_datetime(s: str) -> Optional[datetime]:
@@ -74,41 +93,91 @@ class PlateRepository:
         "autorizado_temp",
     ]
 
-    def __init__(self, delimiter: str = ";"):
+    MAX_BACKUPS = 200
+
+    def __init__(self, delimiter: str = ";", backup_dir: Optional[str] = None):
         self.delimiter = delimiter
+        self.backup_dir = backup_dir
         self.data: Dict[str, List[str]] = {}  # {PLACA: [detalhes, status, timestamp, expires_at]}
         self.current_file_path: Optional[str] = None
         self.history: List[Dict[str, str]] = []  # [{"query": ..., "time": ..., "user": ...}]
         self._lock = threading.Lock()
+        self._file_sig: Optional[Tuple[int, int]] = None  # (mtime_ns, size) of the CSV as last read/written
+
+    def _read_file(self, file_path: str) -> Dict[str, List[str]]:
+        with open(file_path, "rb") as f:
+            text = decode_csv_bytes(f.read(), file_path)
+
+        new_data: Dict[str, List[str]] = {}
+        reader = csv.reader(io.StringIO(text, newline=""), delimiter=self.delimiter)
+        for row in reader:
+            if len(row) < 3 or not row[0].strip():
+                continue
+            placa = row[0].strip().upper().replace("-", "")
+            detalhes = row[1].strip() if len(row) > 1 else ""
+            status = row[2].strip() if len(row) > 2 else "não autorizado"
+            ts = row[3].strip() if len(row) > 3 else ""
+            expires_at = row[4].strip() if len(row) > 4 else ""
+            cor = row[5].strip() if len(row) > 5 else ""
+            modelo = row[6].strip() if len(row) > 6 else ""
+            new_data[placa] = [detalhes, status, ts, expires_at, cor, modelo]
+        return new_data
+
+    @staticmethod
+    def _file_signature(file_path: str) -> Tuple[int, int]:
+        st = os.stat(file_path)
+        return (st.st_mtime_ns, st.st_size)
 
     def load(self, file_path: str) -> Dict[str, List[str]]:
         with self._lock:
             if not os.path.exists(file_path):
                 raise FileNotFoundError(f"Arquivo CSV não encontrado: {file_path}")
 
-            new_data: Dict[str, List[str]] = {}
-            with open(file_path, "r", encoding="utf-8", errors="replace", newline="") as f:
-                reader = csv.reader(f, delimiter=self.delimiter)
-                for row in reader:
-                    if len(row) < 3 or not row[0].strip():
-                        continue
-                    placa = row[0].strip().upper().replace("-", "")
-                    detalhes = row[1].strip() if len(row) > 1 else ""
-                    status = row[2].strip() if len(row) > 2 else "não autorizado"
-                    ts = row[3].strip() if len(row) > 3 else ""
-                    expires_at = row[4].strip() if len(row) > 4 else ""
-                    cor = row[5].strip() if len(row) > 5 else ""
-                    modelo = row[6].strip() if len(row) > 6 else ""
-                    new_data[placa] = [detalhes, status, ts, expires_at, cor, modelo]
-
-            self.data = new_data
+            sig = self._file_signature(file_path)
+            self.data = self._read_file(file_path)
             self.current_file_path = file_path
+            self._file_sig = sig
             return self.data
+
+    def _reload_if_changed(self, strict: bool = True) -> None:
+        """Pick up edits made to the CSV outside the web app (e.g. confere.py), so the
+        next save does not overwrite them. Must be called with self._lock held.
+        strict=False keeps serving the in-memory data if the file can't be read
+        (e.g. caught mid-write); writers use strict=True and never save over it."""
+        path = self.current_file_path
+        if not path or not os.path.exists(path):
+            return
+        sig = self._file_signature(path)
+        if sig == self._file_sig:
+            return
+        try:
+            self.data = self._read_file(path)
+        except Exception:
+            if strict:
+                raise
+            return
+        self._file_sig = sig
+
+    def _backup(self, file_path: str) -> None:
+        """Copy the CSV to backup_dir before it is overwritten, keeping the newest MAX_BACKUPS per file name."""
+        if not self.backup_dir or not os.path.exists(file_path):
+            return
+        os.makedirs(self.backup_dir, exist_ok=True)
+        stem = os.path.splitext(os.path.basename(file_path))[0]
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        shutil.copy2(file_path, os.path.join(self.backup_dir, f"{stem}-{stamp}.csv"))
+
+        pattern = re.compile(re.escape(stem) + r"-\d{8}-\d{6}-\d{6}\.csv$")
+        backups = sorted(f for f in os.listdir(self.backup_dir) if pattern.match(f))
+        for old in backups[:-self.MAX_BACKUPS]:
+            os.remove(os.path.join(self.backup_dir, old))
 
     def save_current(self) -> None:
         if not self.current_file_path:
             raise ValueError("Nenhum caminho de CSV definido.")
+        self._backup(self.current_file_path)
         self._atomic_save(self.data, self.current_file_path)
+        self._file_sig = self._file_signature(self.current_file_path)
 
     def _atomic_save(self, data: Dict[str, List[str]], file_path: str) -> None:
         dir_name = os.path.dirname(os.path.abspath(file_path)) or "."
@@ -145,6 +214,7 @@ class PlateRepository:
         modelo: str = "",
     ) -> Dict[str, Any]:
         with self._lock:
+            self._reload_if_changed()
             clean = self.clean_plate(placa)
             if not clean:
                 raise ValueError("Informe a placa.")
@@ -168,6 +238,7 @@ class PlateRepository:
 
     def delete(self, placa: str) -> bool:
         with self._lock:
+            self._reload_if_changed()
             clean = self.clean_plate(placa)
             if clean in self.data:
                 self.data[clean][1] = "excluido"
@@ -221,6 +292,7 @@ class PlateRepository:
         temp_filter: Optional[str] = None,  # 'all', 'active', 'expired', or None
     ) -> List[Dict[str, Any]]:
         with self._lock:
+            self._reload_if_changed(strict=False)
             q = query.strip()
             q_clean = q.upper().replace("-", "").replace(" ", "") if ignore_case else q
             results = []
@@ -302,6 +374,7 @@ class PlateRepository:
 
     def get_stats(self) -> Dict[str, Any]:
         with self._lock:
+            self._reload_if_changed(strict=False)
             total = 0
             authorized = 0
             temp_active = 0
@@ -341,4 +414,4 @@ class PlateRepository:
 
 
 # Singleton instance shared across the web app
-repository = PlateRepository()
+repository = PlateRepository(backup_dir=os.path.join(DATA_DIR, "backups"))
