@@ -17,7 +17,7 @@ echo "[*] Verificando dependências..."
 echo "=========================================================="
 echo "  🚗 Confere Placa Web - Servidor Iniciado"
 echo "  Acesse no navegador: http://localhost:8000"
-echo "  Usuário inicial: admin | Senha: admin123"
+echo "  Usuário inicial: admin | Senha: exibida abaixo no primeiro início"
 echo "=========================================================="
 
 # Start FastAPI server via uvicorn

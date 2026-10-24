@@ -44,12 +44,14 @@ def set_csv_path(req: CsvPathRequest, admin=Depends(require_admin)):
 
 @router.post("/upload-csv")
 async def upload_csv(file: UploadFile = File(...), admin=Depends(require_admin)):
-    if not file.filename.lower().endswith(".csv"):
+    # Keep only the base name: the client-supplied filename may contain "../" or an absolute path
+    filename = os.path.basename((file.filename or "").replace("\\", "/"))
+    if not filename.lower().endswith(".csv"):
         raise HTTPException(status_code=400, detail="O arquivo enviado deve ser do tipo .csv")
 
     upload_dir = os.path.join(DATA_DIR, "uploads")
     os.makedirs(upload_dir, exist_ok=True)
-    target_path = os.path.join(upload_dir, file.filename)
+    target_path = os.path.join(upload_dir, filename)
 
     try:
         with open(target_path, "wb") as buffer:
@@ -60,7 +62,7 @@ async def upload_csv(file: UploadFile = File(...), admin=Depends(require_admin))
 
         return {
             "ok": True,
-            "message": f"Arquivo '{file.filename}' enviado e ativado com sucesso!",
+            "message": f"Arquivo '{filename}' enviado e ativado com sucesso!",
             "stats": repository.get_stats(),
         }
     except Exception as e:

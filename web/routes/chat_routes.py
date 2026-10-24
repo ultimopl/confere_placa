@@ -67,6 +67,11 @@ async def websocket_chat_endpoint(websocket: WebSocket, token: Optional[str] = Q
     try:
         while True:
             data = await websocket.receive_json()
+            # Re-check the session so a deleted/demoted user cannot keep using an open socket
+            if not get_user_from_token(auth_token):
+                await websocket.close(code=4001, reason="Sessão expirada")
+                await chat_manager.disconnect(websocket)
+                return
             msg_type = data.get("type")
             if msg_type == "chat_message":
                 text = (data.get("text") or "").strip()

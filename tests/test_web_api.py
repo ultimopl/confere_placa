@@ -10,11 +10,24 @@ from web.auth import init_default_admin, load_users, _sessions
 from web.repository import repository
 from web.config import set_active_csv_path
 from web.chat_manager import chat_manager
+import web.auth
+import web.chat_manager
+import web.config
+import web.routes.config_routes
+
+ADMIN_PW = "senha-admin-teste"
+
 
 @pytest.fixture(autouse=True)
-def setup_test_env():
+def setup_test_env(monkeypatch):
     # Use a temporary directory for test data
     test_dir = tempfile.mkdtemp(prefix="confere_test_")
+    # Never touch the real app.conf / web_data/ files
+    monkeypatch.setattr(web.auth, "USERS_FILE", os.path.join(test_dir, "users.json"))
+    monkeypatch.setattr(web.config, "CONF_PATH", os.path.join(test_dir, "app.conf"))
+    monkeypatch.setattr(web.chat_manager, "CHAT_HISTORY_FILE", os.path.join(test_dir, "chat_history.json"))
+    monkeypatch.setattr(web.routes.config_routes, "DATA_DIR", os.path.join(test_dir, "web_data"))
+    monkeypatch.setenv("CONFERE_ADMIN_PASSWORD", ADMIN_PW)
     test_csv = os.path.join(test_dir, "test_plates.csv")
 
     # Create dummy initial CSV
@@ -54,7 +67,7 @@ def login_helper(client, username, password):
 # ==================== AUTH & RBAC TESTS ====================
 
 def test_login_success_and_logout(client):
-    res = client.post("/api/auth/login", json={"username": "admin", "password": "admin123"})
+    res = client.post("/api/auth/login", json={"username": "admin", "password": ADMIN_PW})
     assert res.status_code == 200
     data = res.json()
     assert data["ok"] is True
@@ -82,7 +95,7 @@ def test_login_invalid_credentials(client):
 
 def test_rbac_operator_restrictions(client):
     # Admin creates an operator
-    login_helper(client, "admin", "admin123")
+    login_helper(client, "admin", ADMIN_PW)
     create_res = client.post("/api/auth/users", json={
         "username": "operador1",
         "name": "Agente Teste",
@@ -129,7 +142,7 @@ def test_rbac_operator_restrictions(client):
 # ==================== PLATES & SEARCH TESTS ====================
 
 def test_add_and_search_plate(client):
-    login_helper(client, "admin", "admin123")
+    login_helper(client, "admin", ADMIN_PW)
 
     # Add Mercosul plate
     add_res = client.post("/api/plates", json={
@@ -148,7 +161,7 @@ def test_add_and_search_plate(client):
 
 
 def test_invalid_plate_format(client):
-    login_helper(client, "admin", "admin123")
+    login_helper(client, "admin", ADMIN_PW)
 
     # Invalid plate format
     res = client.post("/api/plates", json={
@@ -161,7 +174,7 @@ def test_invalid_plate_format(client):
 
 
 def test_temporary_plates_active_and_expired(client):
-    login_helper(client, "admin", "admin123")
+    login_helper(client, "admin", ADMIN_PW)
 
     # 1. Add active temporary plate (+4 hours)
     res_active = client.post("/api/plates", json={
@@ -202,7 +215,7 @@ def test_temporary_plates_active_and_expired(client):
 
 
 def test_soft_delete_plate(client):
-    login_helper(client, "admin", "admin123")
+    login_helper(client, "admin", ADMIN_PW)
 
     # Verify plate exists
     get_res = client.get("/api/plates/ABC1234")
@@ -223,7 +236,7 @@ def test_soft_delete_plate(client):
 
 
 def test_history_and_stats(client):
-    login_helper(client, "admin", "admin123")
+    login_helper(client, "admin", ADMIN_PW)
 
     # Search queries create history
     client.get("/api/plates?q=BUSCA1")
@@ -255,7 +268,7 @@ def test_index_html_served(client):
 
 
 def test_cor_and_modelo_support_and_backward_compatibility(client, setup_test_env):
-    login_helper(client, "admin", "admin123")
+    login_helper(client, "admin", ADMIN_PW)
 
     # 1. Existing plates from setup_test_env (legacy 4 columns without cor/modelo) load seamlessly
     res_legacy = client.get("/api/plates/ABC1234")
@@ -315,7 +328,7 @@ def test_chat_rest_api_and_permissions(client):
     res_unauth = client.get("/api/chat/messages")
     assert res_unauth.status_code == 401
 
-    token_admin = login_helper(client, "admin", "admin123")
+    token_admin = login_helper(client, "admin", ADMIN_PW)
 
     # Send message via REST
     send_res = client.post("/api/chat/messages", json={"text": "Olá portaria!"})
@@ -351,7 +364,7 @@ def test_chat_rest_api_and_permissions(client):
 
     # Admin clears chat history
     client.post("/api/auth/logout")
-    login_helper(client, "admin", "admin123")
+    login_helper(client, "admin", ADMIN_PW)
     clear_admin = client.delete("/api/chat/messages")
     assert clear_admin.status_code == 200
 
@@ -361,7 +374,7 @@ def test_chat_rest_api_and_permissions(client):
 
 
 def test_chat_websocket_flow_and_broadcast(client):
-    token = login_helper(client, "admin", "admin123")
+    token = login_helper(client, "admin", ADMIN_PW)
 
     with client.websocket_connect(f"/api/chat/ws?token={token}") as ws:
         # Upon connecting, server broadcasts users_update
@@ -387,7 +400,7 @@ def test_chat_websocket_flow_and_broadcast(client):
 
 
 def test_new_plate_broadcast_alert(client):
-    token = login_helper(client, "admin", "admin123")
+    token = login_helper(client, "admin", ADMIN_PW)
 
     with client.websocket_connect(f"/api/chat/ws?token={token}") as ws:
         # Initial user list
@@ -428,3 +441,93 @@ def test_new_plate_broadcast_alert(client):
         assert alert_msg_loud["plate"]["placa"] == "LOD9X99"
         assert alert_msg_loud["loud_alert"] is True
 
+
+
+# ==================== SECURITY REGRESSION TESTS ====================
+
+def test_default_admin_has_no_hardcoded_password(client, monkeypatch, capsys):
+    # Fresh install without env var: random password, printed once, admin123 rejected
+    os.remove(web.auth.USERS_FILE)
+    monkeypatch.delenv("CONFERE_ADMIN_PASSWORD")
+    init_default_admin()
+    out = capsys.readouterr().out
+    assert "admin123" not in out
+    assert client.post("/api/auth/login", json={"username": "admin", "password": "admin123"}).status_code == 401
+    printed_pw = out.split("criada: ")[1].split()[0]
+    login_helper(client, "admin", printed_pw)
+
+
+def test_legacy_admin123_is_rotated_and_deleted_admin_not_recreated(client):
+    users = load_users()
+    salt = users["admin"]["salt"]
+    users["admin"]["password_hash"] = web.auth._hash_password("admin123", salt)
+    web.auth.save_users(users)
+    init_default_admin()
+    assert client.post("/api/auth/login", json={"username": "admin", "password": "admin123"}).status_code == 401
+    login_helper(client, "admin", ADMIN_PW)
+
+    # Deleting 'admin' (with another admin present) must not resurrect it on restart
+    web.auth.create_or_update_user("chefe", "Chefe", "senha_chefe", "admin")
+    web.auth.delete_user("admin", current_admin="chefe")
+    init_default_admin()
+    assert "admin" not in load_users()
+
+
+def test_upload_csv_filename_traversal_is_neutralized(client, setup_test_env):
+    data_dir = web.routes.config_routes.DATA_DIR
+    login_helper(client, "admin", ADMIN_PW)
+
+    outside = os.path.join(setup_test_env["test_dir"], "escaped.csv")
+    for evil in ("../../escaped.csv", outside, "..\\..\\escaped.csv"):
+        res = client.post(
+            "/api/config/upload-csv",
+            files={"file": (evil, b"ABC1234;x;autorizado;2026-01-01T10:00:00;\n", "text/csv")},
+        )
+        assert res.status_code == 200
+    assert not os.path.exists(outside)
+    assert os.listdir(os.path.join(data_dir, "uploads")) == ["escaped.csv"]
+
+
+def test_sessions_revoked_on_delete_demote_and_password_change(client):
+    web.auth.create_or_update_user("gerente", "Gerente", "senha_gerente", "admin")
+    other = TestClient(app)
+    login_helper(other, "gerente", "senha_gerente")
+    assert other.get("/api/auth/users").status_code == 200
+
+    # Demotion takes effect immediately
+    web.auth.create_or_update_user("gerente", "Gerente", None, "operador")
+    assert other.get("/api/auth/users").status_code == 403
+
+    # Admin password reset kills existing sessions
+    web.auth.create_or_update_user("gerente", "Gerente", "nova_senha", "operador")
+    assert other.get("/api/auth/me").status_code == 401
+
+    # Deletion kills existing sessions
+    login_helper(other, "gerente", "nova_senha")
+    web.auth.delete_user("gerente", current_admin="admin")
+    assert other.get("/api/auth/me").status_code == 401
+
+    # Own password change keeps the caller logged in with a fresh session, old token dies
+    old_token = login_helper(client, "admin", ADMIN_PW)
+    res = client.post("/api/auth/change-password", json={"old_password": ADMIN_PW, "new_password": "outra_senha"})
+    assert res.status_code == 200
+    assert client.get("/api/auth/me").status_code == 200
+    stale = TestClient(app).get("/api/auth/me", headers={"Authorization": f"Bearer {old_token}"})
+    assert stale.status_code == 401
+
+
+def test_corrupt_users_file_is_never_overwritten(client):
+    with open(web.auth.USERS_FILE, "w", encoding="utf-8") as f:
+        f.write('{"admin": {"username": "adm')  # truncated JSON
+    with open(web.auth.USERS_FILE, "rb") as f:
+        original = f.read()
+
+    with pytest.raises(RuntimeError):
+        init_default_admin()
+    with pytest.raises(RuntimeError):
+        web.auth.create_or_update_user("novo", "Novo", "senha_nova", "operador")
+    with pytest.raises(RuntimeError):
+        client.post("/api/auth/login", json={"username": "admin", "password": ADMIN_PW})
+
+    with open(web.auth.USERS_FILE, "rb") as f:
+        assert f.read() == original

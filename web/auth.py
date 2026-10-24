@@ -29,11 +29,19 @@ def _hash_password(password: str, salt: str) -> str:
 def load_users() -> Dict[str, Any]:
     if not os.path.exists(USERS_FILE):
         return {}
+    # Never treat an unreadable file as "no users": callers that save afterwards
+    # would overwrite every account (and init_default_admin would recreate admin)
     try:
         with open(USERS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    except Exception:
-        return {}
+            users = json.load(f)
+    except (OSError, ValueError) as e:
+        raise RuntimeError(
+            f"Não foi possível ler {USERS_FILE}: {e}. "
+            "Corrija ou restaure o arquivo; ele não será sobrescrito."
+        ) from e
+    if not isinstance(users, dict):
+        raise RuntimeError(f"Formato inválido em {USERS_FILE}: esperado um objeto JSON.")
+    return users
 
 
 def save_users(users: Dict[str, Any]) -> None:
@@ -43,19 +51,44 @@ def save_users(users: Dict[str, Any]) -> None:
     os.replace(temp_file, USERS_FILE)
 
 
+LEGACY_DEFAULT_PASSWORD = "admin123"
+
+
 def init_default_admin() -> None:
+    """Create the first admin (only when there are no users) or rotate the legacy
+    hardcoded 'admin123' password. The password comes from CONFERE_ADMIN_PASSWORD
+    or is generated randomly and printed once to the server console."""
     users = load_users()
-    if not users or "admin" not in users:
-        salt = secrets.token_hex(16)
+    admin = users.get("admin")
+    legacy = admin is not None and secrets.compare_digest(
+        _hash_password(LEGACY_DEFAULT_PASSWORD, admin["salt"]), admin["password_hash"]
+    )
+    if users and not legacy:
+        return
+
+    env_password = os.environ.get("CONFERE_ADMIN_PASSWORD", "")
+    password = env_password or secrets.token_urlsafe(9)
+    salt = secrets.token_hex(16)
+    if legacy:
+        admin["salt"] = salt
+        admin["password_hash"] = _hash_password(password, salt)
+    else:
         users["admin"] = {
             "username": "admin",
             "name": "Administrador",
-            "password_hash": _hash_password("admin123", salt),
+            "password_hash": _hash_password(password, salt),
             "salt": salt,
             "role": "admin",
             "created_at": datetime.now().isoformat(),
         }
-        save_users(users)
+    save_users(users)
+
+    motivo = "substituída (senha padrão antiga)" if legacy else "criada"
+    if env_password:
+        print(f"[OK] Senha do usuário 'admin' {motivo} a partir de CONFERE_ADMIN_PASSWORD.")
+    else:
+        print(f"[!] Senha do usuário 'admin' {motivo}: {password}")
+        print("[!] Anote-a e altere-a após o primeiro login. Ela não será exibida novamente.")
 
 
 def authenticate_user(username: str, password: str) -> Optional[Dict[str, Any]]:
@@ -81,6 +114,8 @@ def create_session(username: str, role: str, name: str, days: int = 7) -> str:
         "name": name,
         "role": role,
         "expires_at": expires,
+        # Salt changes on every password change, invalidating older sessions
+        "salt": load_users().get(username, {}).get("salt", ""),
     }
     return token
 
@@ -90,18 +125,23 @@ def delete_session(token: str) -> None:
 
 
 def get_user_from_token(token: Optional[str]) -> Optional[Dict[str, Any]]:
+    """Validate a session against users.json on every call, so deleted users,
+    role changes and password changes take effect immediately."""
     if not token:
         return None
     session = _sessions.get(token)
     if not session:
         return None
     try:
-        expires_at = datetime.fromisoformat(session["expires_at"])
-        if datetime.now() > expires_at:
-            _sessions.pop(token, None)
-            return None
+        expired = datetime.now() > datetime.fromisoformat(session["expires_at"])
     except Exception:
+        expired = True
+    u = load_users().get(session["username"])
+    if expired or not u or u.get("salt") != session.get("salt"):
+        _sessions.pop(token, None)
         return None
+    session["role"] = u.get("role", "operador")
+    session["name"] = u.get("name", u["username"])
     return session
 
 
@@ -117,20 +157,11 @@ def get_current_user(
             detail="Não autenticado. Por favor, faça login.",
         )
 
-    session = _sessions.get(token)
+    session = get_user_from_token(token)
     if not session:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Sessão inválida ou expirada.",
-        )
-
-    # Check expiration
-    expires_at = datetime.fromisoformat(session["expires_at"])
-    if datetime.now() > expires_at:
-        _sessions.pop(token, None)
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Sessão expirada. Faça login novamente.",
+            detail="Sessão inválida ou expirada. Faça login novamente.",
         )
 
     return session

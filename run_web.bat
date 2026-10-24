@@ -30,7 +30,7 @@ echo.
 echo ==========================================================
 echo   🚗 Confere Placa Web - Servidor Iniciado!
 echo   Acesse no navegador: http://localhost:8000
-echo   Usuario inicial: admin ^| Senha: admin123
+echo   Usuario inicial: admin ^| Senha: exibida abaixo no primeiro inicio
 echo ==========================================================
 echo.
 

@@ -35,6 +35,17 @@ class ChangePasswordRequest(BaseModel):
     new_password: str = Field(..., min_length=4)
 
 
+def _set_session_cookie(response: Response, token: str) -> None:
+    response.set_cookie(
+        key="session_token",
+        value=token,
+        httponly=True,
+        samesite="lax",
+        max_age=7 * 24 * 3600,
+        path="/",
+    )
+
+
 @router.post("/login")
 def login(req: LoginRequest, response: Response):
     user = authenticate_user(req.username, req.password)
@@ -51,14 +62,7 @@ def login(req: LoginRequest, response: Response):
         days=7,
     )
 
-    response.set_cookie(
-        key="session_token",
-        value=token,
-        httponly=True,
-        samesite="lax",
-        max_age=7 * 24 * 3600,
-        path="/",
-    )
+    _set_session_cookie(response, token)
 
     return {
         "ok": True,
@@ -116,13 +120,23 @@ def remove_user(username: str, admin=Depends(require_admin)):
 
 
 @router.post("/change-password")
-def change_password(req: ChangePasswordRequest, user=Depends(get_current_user)):
+def change_password(
+    req: ChangePasswordRequest,
+    response: Response,
+    user=Depends(get_current_user),
+    current_token: Optional[str] = Depends(cookie_scheme),
+):
     try:
         change_own_password(
             username=user["username"],
             old_password=req.old_password,
             new_password=req.new_password,
         )
-        return {"ok": True, "message": "Senha alterada com sucesso."}
+        # The password change invalidated every session of this user; issue a fresh one
+        if current_token:
+            delete_session(current_token)
+        token = create_session(username=user["username"], role=user["role"], name=user["name"], days=7)
+        _set_session_cookie(response, token)
+        return {"ok": True, "message": "Senha alterada com sucesso.", "token": token}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
