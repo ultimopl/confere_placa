@@ -31,6 +31,9 @@
           <span class="user-role" id="user-role-badge">Admin</span>
         </div>
       </div>
+      <button id="btn-toggle-chat" class="btn btn-outline btn-sm btn-chat-toggle" title="Abrir Chat Geral">
+        💬 Chat <span id="chat-unread-badge" class="badge-count hidden">0</span>
+      </button>
       <button id="btn-change-password" class="btn btn-outline btn-sm" title="Alterar minha senha">
         🔑 Senha
       </button>
@@ -50,6 +53,9 @@
     </button>
     <button class="nav-tab admin-only" data-tab="tab-users" role="tab">
       👥 Usuários
+    </button>
+    <button class="nav-tab" data-tab="tab-chat" role="tab">
+      💬 Chat Geral <span id="nav-chat-unread" class="badge-count hidden">0</span>
     </button>
     <button class="nav-tab" data-tab="tab-config" role="tab">
       ⚙️ Configurações
@@ -250,6 +256,18 @@
               </div>
             </div>
 
+            <!-- Alert Notification Option for this Plate -->
+            <div class="form-group alert-dispatch-box">
+              <label class="checkbox-container">
+                <input type="checkbox" id="add-emit-loud-alert">
+                <span class="checkmark-box"></span>
+                <span class="checkbox-text">
+                  <strong>🚨 Emitir alerta ainda mais sonoro e chamativo para a equipe</strong>
+                  <small class="text-muted d-block">Toca uma sirene de alta atenção e abre aviso em destaque vermelho nas telas dos agentes e operadores conectados.</small>
+                </span>
+              </label>
+            </div>
+
             <div class="form-actions">
               <button type="submit" class="btn btn-primary">💾 Salvar Placa</button>
               <button type="button" id="btn-add-clear" class="btn btn-outline">Limpar Campos</button>
@@ -266,7 +284,7 @@
           <div class="card-header-flex">
             <div>
               <h2>👥 Usuários do Sistema</h2>
-              <p>Gerencie o acesso de porteiros, operadores e administradores.</p>
+              <p>Gerencie o acesso de agentes, operadores e administradores.</p>
             </div>
             <button id="btn-open-new-user-modal" class="btn btn-primary">
               ➕ Novo Usuário
@@ -293,7 +311,80 @@
       </div>
     </section>
 
-    <!-- TAB 4: CONFIGURAÇÕES -->
+    <!-- TAB 4: CHAT GERAL -->
+    <section id="tab-chat" class="tab-pane">
+      <div class="chat-tab-layout">
+        <!-- Main Chat Box -->
+        <div class="chat-card main-chat-card">
+          <div class="chat-header">
+            <div class="chat-header-title">
+              <span class="chat-header-icon">💬</span>
+              <div>
+                <h2>Chat Geral da Portaria & Equipe</h2>
+                <p>Comunicação em tempo real entre todos os operadores e administradores conectados.</p>
+              </div>
+            </div>
+            <div class="chat-header-actions">
+              <button id="btn-sound-quick-toggle" class="btn btn-outline btn-sm" title="Alternar som de mensagens">
+                🔔 Som: Ligado
+              </button>
+              <button id="btn-clear-chat-tab" class="btn btn-outline btn-sm admin-only" title="Limpar histórico de mensagens">
+                🧹 Limpar Chat
+              </button>
+            </div>
+          </div>
+
+          <!-- Messages stream -->
+          <div id="chat-messages-container" class="chat-messages-area">
+            <div class="chat-empty">
+              <span>💬</span>
+              <p>Nenhuma mensagem ainda. Inicie uma conversa com a equipe!</p>
+            </div>
+          </div>
+
+          <!-- Input bar -->
+          <form id="chat-form" class="chat-input-bar">
+            <input 
+              type="text" 
+              id="chat-input-text" 
+              class="form-control chat-input" 
+              placeholder="Digite sua mensagem para todos os logados... (Pressione Enter para enviar)"
+              maxlength="1000"
+              autocomplete="off"
+            >
+            <button type="submit" id="chat-btn-send" class="btn btn-primary chat-btn-send" title="Enviar mensagem">
+              Enviar 🚀
+            </button>
+          </form>
+        </div>
+
+        <!-- Online Users Sidebar in Tab -->
+        <aside class="chat-sidebar">
+          <div class="sidebar-card">
+            <div class="sidebar-header">
+              <h3>🟢 Conectados Agora (<span id="chat-online-count">0</span>)</h3>
+            </div>
+            <p class="sidebar-subtext">Usuários com o sistema aberto no momento:</p>
+            <ul id="chat-online-list" class="online-users-list">
+              <li class="history-empty">Carregando usuários...</li>
+            </ul>
+          </div>
+
+          <div class="sidebar-card mt-4">
+            <div class="sidebar-header">
+              <h3>⚡ Dicas Rápidas</h3>
+            </div>
+            <ul class="chat-tips-list">
+              <li>🔔 Alertas sonoros tocam automaticamente ao receber mensagens.</li>
+              <li>🚗 Novas placas cadastradas geram aviso sonoro e visual instantâneo.</li>
+              <li>⚙️ Você pode personalizar os sons na aba <strong>Configurações</strong>.</li>
+            </ul>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- TAB 5: CONFIGURAÇÕES -->
     <section id="tab-config" class="tab-pane">
       <div class="config-layout">
         
@@ -341,6 +432,60 @@
                 <span style="font-weight: 600;">João da Silva - Empresa Fornecedora</span>
                 <span class="status-badge status-authorized">🟢 Autorizado</span>
                 <span class="status-badge status-temp-active">⏱️ Temp - Ativo</span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Audio & Notification Settings Card (Visible to all users) -->
+        <div class="section-card">
+          <div class="card-header-flex">
+            <div>
+              <h2>🔔 Sons & Alertas</h2>
+              <p>Configure os sinais sonoros para mensagens de chat e notificações de novas placas cadastradas.</p>
+            </div>
+          </div>
+
+          <div class="settings-form-grid mt-4">
+            <div class="toggle-card">
+              <div class="toggle-info">
+                <strong>Som de Alerta de Mensagem no Chat</strong>
+                <p>Toca um sinal sonoro agradável quando uma nova mensagem chegar no chat.</p>
+              </div>
+              <div class="toggle-control">
+                <input type="checkbox" id="chk-sound-chat" class="switch-input" checked>
+                <label for="chk-sound-chat" class="switch-label"></label>
+                <button type="button" id="btn-test-chat-sound" class="btn btn-outline btn-sm" title="Testar som do chat">
+                  ▶️ Testar
+                </button>
+              </div>
+            </div>
+
+            <div class="toggle-card">
+              <div class="toggle-info">
+                <strong>Alerta de Placa Nova Cadastrada (Opcional)</strong>
+                <p>Notifica a portaria com alerta sonoro e aviso visual quando qualquer operador/administrador cadastrar uma nova placa no sistema.</p>
+              </div>
+              <div class="toggle-control">
+                <input type="checkbox" id="chk-sound-plate" class="switch-input" checked>
+                <label for="chk-sound-plate" class="switch-label"></label>
+                <button type="button" id="btn-test-plate-sound" class="btn btn-outline btn-sm" title="Testar som padrão de nova placa">
+                  ▶️ Testar
+                </button>
+              </div>
+            </div>
+
+            <div class="toggle-card toggle-card-highlight">
+              <div class="toggle-info">
+                <strong>🚨 Alerta Extra Sonoro e Chamativo (Sirene / Portaria Ruidosa)</strong>
+                <p>Emite um alerta sonoro duplo com oscilação em volume elevado e destaque visual pulsante no toast para ambientes barulhentos onde a atenção imediata é necessária.</p>
+              </div>
+              <div class="toggle-control">
+                <input type="checkbox" id="chk-sound-plate-loud" class="switch-input">
+                <label for="chk-sound-plate-loud" class="switch-label switch-label-danger"></label>
+                <button type="button" id="btn-test-plate-loud-sound" class="btn btn-outline btn-sm" title="Testar alerta extra sonoro">
+                  🚨 Testar Alto
+                </button>
               </div>
             </div>
           </div>
@@ -417,10 +562,39 @@
 
   </main>
 
-  <!-- Footer -->
-  <footer class="app-footer">
-    <p>Confere Placa &bull; Todos os direitos reservados.</p>
-  </footer>
+  <!-- Toast Notification Container for New Plate Alerts & System Events -->
+  <div id="toast-container" class="toast-container" aria-live="polite"></div>
+
+  <!-- Floating Chat Drawer (Accessible from any screen via header button) -->
+  <aside id="floating-chat-drawer" class="floating-chat-drawer hidden">
+    <div class="drawer-header">
+      <div class="drawer-title">
+        <span>💬 Chat Geral</span>
+        <span id="drawer-online-badge" class="chip-badge-online">0 online</span>
+      </div>
+      <div class="drawer-controls">
+        <button id="btn-drawer-sound" class="btn-icon-subtle" title="Ligar/Desligar som do chat">🔔</button>
+        <button id="btn-close-drawer" class="btn-icon-subtle" title="Fechar painel do chat">&times;</button>
+      </div>
+    </div>
+    <div id="drawer-messages-container" class="drawer-messages-area">
+      <div class="chat-empty">
+        <span>💬</span>
+        <p>Nenhuma mensagem ainda.</p>
+      </div>
+    </div>
+    <form id="drawer-chat-form" class="drawer-input-bar">
+      <input 
+        type="text" 
+        id="drawer-chat-input" 
+        class="form-control drawer-input" 
+        placeholder="Digite uma mensagem..."
+        maxlength="1000"
+        autocomplete="off"
+      >
+      <button type="submit" class="btn btn-primary btn-sm">Enviar</button>
+    </form>
+  </aside>
 
   <!-- ==================== MODALS / DIALOGS ==================== -->
 

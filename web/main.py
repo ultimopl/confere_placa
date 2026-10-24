@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from web.auth import init_default_admin
 from web.config import get_active_csv_path
 from web.repository import repository
-from web.routes import auth_routes, plate_routes, config_routes
+from web.routes import auth_routes, plate_routes, config_routes, chat_routes
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 STATIC_DIR = os.path.join(BASE_DIR, "static")
@@ -40,6 +40,7 @@ app = FastAPI(
 app.include_router(auth_routes.router)
 app.include_router(plate_routes.router)
 app.include_router(config_routes.router)
+app.include_router(chat_routes.router)
 
 # Mount static files
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")

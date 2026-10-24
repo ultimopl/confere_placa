@@ -12,6 +12,15 @@ const state = {
   editTempPresetHours: 24,
   deleteTargetPlate: null,
   fontSize: localStorage.getItem("confere_placa_font_size") || "16",
+  soundChatEnabled: localStorage.getItem("confere_placa_sound_chat") !== "false",
+  soundPlateEnabled: localStorage.getItem("confere_placa_sound_plate") !== "false",
+  soundPlateLoudEnabled: localStorage.getItem("confere_placa_sound_plate_loud") === "true",
+  chatDrawerOpen: false,
+  chatUnreadCount: 0,
+  chatSocket: null,
+  chatReconnectTimer: null,
+  chatMessages: [],
+  onlineUsers: [],
 };
 
 // ==================== INITIALIZATION ====================
@@ -53,6 +62,9 @@ function initializeApp() {
   loadConfigStats();
   loadPlates();
   loadHistory();
+  initSoundSettingsUI();
+  initChatWebSocket();
+  loadChatMessages();
   if (state.user && state.user.role === "admin") {
     loadUsers();
   }
@@ -135,6 +147,7 @@ async function handleLogin(e) {
 }
 
 async function handleLogout() {
+  closeChatWebSocket();
   try {
     await fetch("/api/auth/logout", { method: "POST" });
   } catch (e) {}
@@ -157,6 +170,10 @@ function setupEventListeners() {
       if (targetId === "tab-search") {
         document.getElementById("search-input")?.focus();
         loadPlates();
+      } else if (targetId === "tab-chat") {
+        clearChatUnread();
+        scrollChatToBottom();
+        document.getElementById("chat-input-text")?.focus();
       } else if (targetId === "tab-config") {
         loadConfigStats();
       } else if (targetId === "tab-users") {
@@ -319,6 +336,54 @@ function setupEventListeners() {
   // Login & Logout
   document.getElementById("form-login")?.addEventListener("submit", handleLogin);
   document.getElementById("btn-logout")?.addEventListener("click", handleLogout);
+
+  // Chat Tab & Drawer Forms
+  document.getElementById("chat-form")?.addEventListener("submit", handleSendChatMessage);
+  document.getElementById("drawer-chat-form")?.addEventListener("submit", handleSendDrawerChatMessage);
+
+  // Header Chat Toggle & Drawer Close
+  document.getElementById("btn-toggle-chat")?.addEventListener("click", toggleChatDrawer);
+  document.getElementById("btn-close-drawer")?.addEventListener("click", closeChatDrawer);
+
+  // Sound Quick Toggle & Clear Chat
+  document.getElementById("btn-sound-quick-toggle")?.addEventListener("click", toggleSoundSettings);
+  document.getElementById("btn-drawer-sound")?.addEventListener("click", toggleSoundSettings);
+  document.getElementById("btn-clear-chat-tab")?.addEventListener("click", handleClearChatHistory);
+
+  // Sound Settings Toggles & Preview Audio Buttons
+  const chkSoundChat = document.getElementById("chk-sound-chat");
+  const chkSoundPlate = document.getElementById("chk-sound-plate");
+
+  chkSoundChat?.addEventListener("change", (e) => {
+    state.soundChatEnabled = e.target.checked;
+    localStorage.setItem("confere_placa_sound_chat", String(e.target.checked));
+    updateSoundUI();
+  });
+
+  chkSoundPlate?.addEventListener("change", (e) => {
+    state.soundPlateEnabled = e.target.checked;
+    localStorage.setItem("confere_placa_sound_plate", String(e.target.checked));
+    updateSoundUI();
+  });
+
+  const chkSoundPlateLoud = document.getElementById("chk-sound-plate-loud");
+  chkSoundPlateLoud?.addEventListener("change", (e) => {
+    state.soundPlateLoudEnabled = e.target.checked;
+    localStorage.setItem("confere_placa_sound_plate_loud", String(e.target.checked));
+    updateSoundUI();
+  });
+
+  document.getElementById("btn-test-chat-sound")?.addEventListener("click", () => {
+    playChatNotificationSound(true);
+  });
+
+  document.getElementById("btn-test-plate-sound")?.addEventListener("click", () => {
+    playNewPlateNotificationSound(true);
+  });
+
+  document.getElementById("btn-test-plate-loud-sound")?.addEventListener("click", () => {
+    playLoudPlateAlertSound(true);
+  });
 }
 
 // ==================== PLATES SEARCH & RENDER ====================
@@ -501,12 +566,15 @@ async function handleAddPlate(e) {
   const status = document.getElementById("add-status").value;
   const exactExpires = document.getElementById("add-expires-at").value.trim();
 
+  const loudAlert = document.getElementById("add-emit-loud-alert")?.checked || false;
+
   const payload = {
     placa,
     detalhes,
     status,
     modelo,
     cor,
+    loud_alert: loudAlert,
   };
 
   if (status === "autorizado_temp") {
@@ -941,4 +1009,560 @@ function formatForDateTimeInput(date) {
   const h = pad(date.getHours());
   const min = pad(date.getMinutes());
   return `${y}-${m}-${d}T${h}:${min}`;
+}
+
+// ==================== SOUND SYNTHESIZER (WEB AUDIO API) ====================
+let audioCtx = null;
+
+function getAudioContext() {
+  if (!audioCtx) {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (AudioContextClass) {
+      audioCtx = new AudioContextClass();
+    }
+  }
+  if (audioCtx && audioCtx.state === "suspended") {
+    audioCtx.resume();
+  }
+  return audioCtx;
+}
+
+/**
+ * Play a double-chime notification sound for incoming chat messages.
+ */
+function playChatNotificationSound(force = false) {
+  if (!force && !state.soundChatEnabled) return;
+  try {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+    // Chime tone 1: 587.33 Hz (D5)
+    const osc1 = ctx.createOscillator();
+    const gain1 = ctx.createGain();
+    osc1.type = "sine";
+    osc1.frequency.setValueAtTime(587.33, now);
+    gain1.gain.setValueAtTime(0, now);
+    gain1.gain.linearRampToValueAtTime(0.2, now + 0.02);
+    gain1.gain.exponentialRampToValueAtTime(0.001, now + 0.18);
+    osc1.connect(gain1);
+    gain1.connect(ctx.destination);
+    osc1.start(now);
+    osc1.stop(now + 0.18);
+
+    // Chime tone 2: 880 Hz (A5)
+    const osc2 = ctx.createOscillator();
+    const gain2 = ctx.createGain();
+    osc2.type = "sine";
+    osc2.frequency.setValueAtTime(880, now + 0.1);
+    gain2.gain.setValueAtTime(0, now + 0.1);
+    gain2.gain.linearRampToValueAtTime(0.25, now + 0.12);
+    gain2.gain.exponentialRampToValueAtTime(0.001, now + 0.35);
+    osc2.connect(gain2);
+    gain2.connect(ctx.destination);
+    osc2.start(now + 0.1);
+    osc2.stop(now + 0.35);
+  } catch (err) {
+    console.warn("Áudio não pôde ser reproduzido:", err);
+  }
+}
+
+/**
+ * Play an alert sound for new plate registrations (ascending triplet: C5 -> E5 -> G5).
+ */
+function playNewPlateNotificationSound(force = false) {
+  if (!force && !state.soundPlateEnabled) return;
+  try {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+
+    const notes = [523.25, 659.25, 783.99]; // C5, E5, G5
+    const now = ctx.currentTime;
+
+    notes.forEach((freq, idx) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const start = now + idx * 0.11;
+
+      osc.type = "triangle";
+      osc.frequency.setValueAtTime(freq, start);
+
+      gain.gain.setValueAtTime(0, start);
+      gain.gain.linearRampToValueAtTime(0.22, start + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, start + 0.22);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(start);
+      osc.stop(start + 0.22);
+    });
+  } catch (err) {
+    console.warn("Áudio não pôde ser reproduzido:", err);
+  }
+}
+
+/**
+ * Play a louder, more prominent and urgent alert sound for new plates.
+ * Two-tone siren burst (high attention) with pulse modulation and higher amplitude.
+ */
+function playLoudPlateAlertSound(force = false) {
+  if (!force && (!state.soundPlateEnabled || !state.soundPlateLoudEnabled)) return;
+  try {
+    const ctx = getAudioContext();
+    if (!ctx) return;
+
+    const now = ctx.currentTime;
+
+    // Burst 1: High tone siren (987.77 Hz - B5)
+    // Burst 2: Ultra High tone (1318.51 Hz - E6)
+    // Repeated twice for urgent prominence
+    const sequences = [
+      { freq: 880, start: 0, dur: 0.14 },
+      { freq: 1174.66, start: 0.14, dur: 0.18 },
+      { freq: 880, start: 0.36, dur: 0.14 },
+      { freq: 1318.51, start: 0.50, dur: 0.28 },
+    ];
+
+    sequences.forEach(({ freq, start, dur }) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      const s = now + start;
+
+      // Sawtooth waveform gives a punchier, sharper buzzer/horn alert feel
+      osc.type = "sawtooth";
+      osc.frequency.setValueAtTime(freq, s);
+      // Pitch slide slightly upward for urgency
+      osc.frequency.exponentialRampToValueAtTime(freq * 1.08, s + dur);
+
+      gain.gain.setValueAtTime(0, s);
+      gain.gain.linearRampToValueAtTime(0.45, s + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.001, s + dur);
+
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.start(s);
+      osc.stop(s + dur);
+    });
+  } catch (err) {
+    console.warn("Áudio de sirene não pôde ser reproduzido:", err);
+  }
+}
+
+// ==================== SOUND SETTINGS & UI ====================
+function initSoundSettingsUI() {
+  const chkChat = document.getElementById("chk-sound-chat");
+  const chkPlate = document.getElementById("chk-sound-plate");
+  const chkPlateLoud = document.getElementById("chk-sound-plate-loud");
+
+  if (chkChat) chkChat.checked = state.soundChatEnabled;
+  if (chkPlate) chkPlate.checked = state.soundPlateEnabled;
+  if (chkPlateLoud) chkPlateLoud.checked = state.soundPlateLoudEnabled;
+
+  updateSoundUI();
+}
+
+function updateSoundUI() {
+  const btnSoundToggle = document.getElementById("btn-sound-quick-toggle");
+  const btnDrawerSound = document.getElementById("btn-drawer-sound");
+
+  if (btnSoundToggle) {
+    btnSoundToggle.textContent = state.soundChatEnabled ? "🔔 Som: Ligado" : "🔕 Som: Desligado";
+    if (state.soundChatEnabled) {
+      btnSoundToggle.classList.remove("btn-danger-hover");
+    } else {
+      btnSoundToggle.classList.add("btn-danger-hover");
+    }
+  }
+
+  if (btnDrawerSound) {
+    btnDrawerSound.textContent = state.soundChatEnabled ? "🔔" : "🔕";
+    btnDrawerSound.title = state.soundChatEnabled ? "Som do chat ligado" : "Som do chat desligado";
+  }
+}
+
+function toggleSoundSettings() {
+  state.soundChatEnabled = !state.soundChatEnabled;
+  localStorage.setItem("confere_placa_sound_chat", String(state.soundChatEnabled));
+  const chkChat = document.getElementById("chk-sound-chat");
+  if (chkChat) chkChat.checked = state.soundChatEnabled;
+  updateSoundUI();
+  showAlert(state.soundChatEnabled ? "Sons do chat ativados!" : "Sons do chat desativados!", "info");
+}
+
+// ==================== CHAT WEBSOCKET & MESSAGING ====================
+function initChatWebSocket() {
+  if (state.chatSocket && (state.chatSocket.readyState === WebSocket.OPEN || state.chatSocket.readyState === WebSocket.CONNECTING)) {
+    return;
+  }
+
+  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+  const wsUrl = `${protocol}//${window.location.host}/api/chat/ws`;
+
+  try {
+    state.chatSocket = new WebSocket(wsUrl);
+
+    state.chatSocket.onopen = () => {
+      console.log("[WS] Conectado ao Chat Geral");
+      if (state.chatReconnectTimer) {
+        clearInterval(state.chatReconnectTimer);
+        state.chatReconnectTimer = null;
+      }
+    };
+
+    state.chatSocket.onmessage = (event) => {
+      try {
+        const data = JSON.parse(event.data);
+        handleIncomingWebSocketMessage(data);
+      } catch (e) {
+        console.error("Erro ao processar mensagem WS:", e);
+      }
+    };
+
+    state.chatSocket.onclose = () => {
+      console.log("[WS] Desconectado. Tentando reconectar em 4 segundos...");
+      if (state.user && !state.chatReconnectTimer) {
+        state.chatReconnectTimer = setTimeout(() => {
+          state.chatReconnectTimer = null;
+          initChatWebSocket();
+        }, 4000);
+      }
+    };
+
+    state.chatSocket.onerror = (err) => {
+      console.warn("[WS] Erro no WebSocket:", err);
+    };
+  } catch (err) {
+    console.error("Falha ao inicializar WebSocket:", err);
+  }
+}
+
+function closeChatWebSocket() {
+  if (state.chatReconnectTimer) {
+    clearTimeout(state.chatReconnectTimer);
+    state.chatReconnectTimer = null;
+  }
+  if (state.chatSocket) {
+    try {
+      state.chatSocket.close();
+    } catch (e) {}
+    state.chatSocket = null;
+  }
+}
+
+function handleIncomingWebSocketMessage(data) {
+  if (data.type === "users_update") {
+    state.onlineUsers = data.online_users || [];
+    renderOnlineUsers(state.onlineUsers);
+  } else if (data.type === "chat_message") {
+    state.chatMessages.push(data);
+    appendChatMessageUI(data);
+
+    // If message is from another user, play sound & increment unread counter
+    const isMe = state.user && state.user.username.toLowerCase() === (data.username || "").toLowerCase();
+    if (!isMe) {
+      playChatNotificationSound();
+      incrementChatUnread();
+    }
+  } else if (data.type === "new_plate_alert") {
+    // If plates table is active, refresh automatically
+    loadPlates();
+    loadConfigStats();
+
+    // Play optional new plate sound and show toast
+    const isLoud = Boolean(data.loud_alert || state.soundPlateLoudEnabled);
+    if (isLoud) {
+      playLoudPlateAlertSound(true); // force play since sender requested loud alert
+    } else {
+      playNewPlateNotificationSound();
+    }
+    showNewPlateToast(data, isLoud);
+  }
+}
+
+async function loadChatMessages() {
+  try {
+    const res = await apiFetch("/api/chat/messages?limit=50");
+    if (res.ok && res.messages) {
+      state.chatMessages = res.messages;
+      renderAllChatMessages();
+    }
+  } catch (err) {
+    console.error("Erro ao carregar mensagens anteriores:", err);
+  }
+}
+
+function renderAllChatMessages() {
+  const containerTab = document.getElementById("chat-messages-container");
+  const containerDrawer = document.getElementById("drawer-messages-container");
+
+  if (!state.chatMessages || state.chatMessages.length === 0) {
+    const emptyHtml = `
+      <div class="chat-empty">
+        <span>💬</span>
+        <p>Nenhuma mensagem ainda. Inicie uma conversa com a equipe!</p>
+      </div>
+    `;
+    if (containerTab) containerTab.innerHTML = emptyHtml;
+    if (containerDrawer) containerDrawer.innerHTML = emptyHtml;
+    return;
+  }
+
+  if (containerTab) containerTab.innerHTML = "";
+  if (containerDrawer) containerDrawer.innerHTML = "";
+
+  state.chatMessages.forEach((msg) => {
+    appendChatMessageUI(msg, false);
+  });
+
+  scrollChatToBottom();
+}
+
+function appendChatMessageUI(msg, autoScroll = true) {
+  const containerTab = document.getElementById("chat-messages-container");
+  const containerDrawer = document.getElementById("drawer-messages-container");
+
+  // Remove empty states if present
+  containerTab?.querySelector(".chat-empty")?.remove();
+  containerDrawer?.querySelector(".chat-empty")?.remove();
+
+  const isMe = state.user && state.user.username.toLowerCase() === (msg.username || "").toLowerCase();
+  const alignClass = isMe ? "chat-msg-outgoing" : "chat-msg-incoming";
+  const roleClass = msg.role === "admin" ? "admin" : "";
+  const roleLabel = msg.role === "admin" ? "Admin" : "Operador";
+
+  const msgHtml = `
+    <div class="chat-msg ${alignClass}" data-id="${escapeHtml(msg.id || "")}">
+      <div class="chat-msg-header">
+        <span class="chat-author">${escapeHtml(msg.name || msg.username)}</span>
+        <span class="chat-author-role ${roleClass}">${roleLabel}</span>
+        <span class="chat-time">&bull; ${escapeHtml(msg.time || "")}</span>
+      </div>
+      <div class="chat-bubble">
+        ${escapeHtml(msg.text)}
+      </div>
+    </div>
+  `;
+
+  if (containerTab) containerTab.insertAdjacentHTML("beforeend", msgHtml);
+  if (containerDrawer) containerDrawer.insertAdjacentHTML("beforeend", msgHtml);
+
+  if (autoScroll) {
+    scrollChatToBottom();
+  }
+}
+
+function scrollChatToBottom() {
+  const containerTab = document.getElementById("chat-messages-container");
+  const containerDrawer = document.getElementById("drawer-messages-container");
+
+  if (containerTab) {
+    containerTab.scrollTop = containerTab.scrollHeight;
+  }
+  if (containerDrawer) {
+    containerDrawer.scrollTop = containerDrawer.scrollHeight;
+  }
+}
+
+function renderOnlineUsers(users) {
+  const countEl = document.getElementById("chat-online-count");
+  const listEl = document.getElementById("chat-online-list");
+  const drawerBadge = document.getElementById("drawer-online-badge");
+
+  const total = users.length;
+  if (countEl) countEl.textContent = total;
+  if (drawerBadge) drawerBadge.textContent = `${total} online`;
+
+  if (!listEl) return;
+  if (total === 0) {
+    listEl.innerHTML = `<li class="history-empty">Nenhum usuário conectado.</li>`;
+    return;
+  }
+
+  listEl.innerHTML = users
+    .map((u) => {
+      const isMe = state.user && state.user.username.toLowerCase() === u.username.toLowerCase();
+      const meBadge = isMe ? `<span class="badge-role" style="font-size: 0.65rem;">Você</span>` : "";
+      const roleBadge = u.role === "admin" ? `<span class="badge-role admin">Admin</span>` : `<span class="badge-role">Operador</span>`;
+
+      return `
+        <li class="online-user-item">
+          <div class="online-user-info">
+            <span class="status-indicator-dot"></span>
+            <span class="online-user-name">${escapeHtml(u.name || u.username)}</span>
+            ${meBadge}
+          </div>
+          <div>${roleBadge}</div>
+        </li>
+      `;
+    })
+    .join("");
+}
+
+// ==================== SEND CHAT MESSAGES ====================
+async function handleSendChatMessage(e) {
+  e.preventDefault();
+  const input = document.getElementById("chat-input-text");
+  if (!input) return;
+  const text = input.value.trim();
+  if (!text) return;
+
+  input.value = "";
+  sendMessagePayload(text);
+  input.focus();
+}
+
+async function handleSendDrawerChatMessage(e) {
+  e.preventDefault();
+  const input = document.getElementById("drawer-chat-input");
+  if (!input) return;
+  const text = input.value.trim();
+  if (!text) return;
+
+  input.value = "";
+  sendMessagePayload(text);
+  input.focus();
+}
+
+function sendMessagePayload(text) {
+  if (state.chatSocket && state.chatSocket.readyState === WebSocket.OPEN) {
+    state.chatSocket.send(JSON.stringify({
+      type: "chat_message",
+      text: text,
+    }));
+  } else {
+    // Fallback to HTTP POST
+    apiFetch("/api/chat/messages", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    }).catch((err) => {
+      showAlert("Falha ao enviar mensagem.", "danger");
+    });
+  }
+}
+
+// ==================== CHAT DRAWER & UNREAD BADGES ====================
+function toggleChatDrawer() {
+  state.chatDrawerOpen = !state.chatDrawerOpen;
+  const drawer = document.getElementById("floating-chat-drawer");
+  if (!drawer) return;
+
+  if (state.chatDrawerOpen) {
+    drawer.classList.remove("hidden");
+    clearChatUnread();
+    scrollChatToBottom();
+    document.getElementById("drawer-chat-input")?.focus();
+  } else {
+    drawer.classList.add("hidden");
+  }
+}
+
+function closeChatDrawer() {
+  state.chatDrawerOpen = false;
+  document.getElementById("floating-chat-drawer")?.classList.add("hidden");
+}
+
+function incrementChatUnread() {
+  // If user is currently looking at the chat tab or drawer, don't accumulate unread
+  const chatTabActive = document.getElementById("tab-chat")?.classList.contains("active");
+  if (chatTabActive || state.chatDrawerOpen) {
+    return;
+  }
+
+  state.chatUnreadCount++;
+  updateUnreadBadges();
+}
+
+function clearChatUnread() {
+  state.chatUnreadCount = 0;
+  updateUnreadBadges();
+}
+
+function updateUnreadBadges() {
+  const headerBadge = document.getElementById("chat-unread-badge");
+  const navBadge = document.getElementById("nav-chat-unread");
+
+  const countStr = state.chatUnreadCount > 99 ? "99+" : String(state.chatUnreadCount);
+
+  if (headerBadge) {
+    if (state.chatUnreadCount > 0) {
+      headerBadge.textContent = countStr;
+      headerBadge.classList.remove("hidden");
+    } else {
+      headerBadge.classList.add("hidden");
+    }
+  }
+
+  if (navBadge) {
+    if (state.chatUnreadCount > 0) {
+      navBadge.textContent = countStr;
+      navBadge.classList.remove("hidden");
+    } else {
+      navBadge.classList.add("hidden");
+    }
+  }
+}
+
+async function handleClearChatHistory() {
+  if (!confirm("Deseja realmente limpar todas as mensagens do histórico do chat geral?")) {
+    return;
+  }
+  try {
+    const res = await apiFetch("/api/chat/messages", { method: "DELETE" });
+    if (res.ok) {
+      state.chatMessages = [];
+      renderAllChatMessages();
+      showAlert("Histórico do chat limpo!", "success");
+    } else {
+      showAlert(res.detail || "Erro ao limpar histórico.", "danger");
+    }
+  } catch (err) {
+    showAlert("Falha ao comunicar com o servidor.", "danger");
+  }
+}
+
+// ==================== NEW PLATE TOAST ALERTS ====================
+function showNewPlateToast(data, forceLoud = null) {
+  const container = document.getElementById("toast-container");
+  if (!container) return;
+
+  const plate = data.plate || {};
+  const plateNumber = plate.placa || "NOVA";
+  const vehicle = [plate.modelo, plate.cor].filter(Boolean).join(" • ") || "Veículo não especificado";
+  const creator = data.creator_name || data.created_by || "Operador";
+  const time = data.time || "";
+
+  const toastId = "toast_" + Date.now() + "_" + Math.floor(Math.random() * 1000);
+  const isLoud = forceLoud !== null ? forceLoud : Boolean(data.loud_alert || state.soundPlateLoudEnabled);
+  const alertClass = isLoud ? "toast-alert plate-alert-loud" : "toast-alert plate-alert";
+  const icon = isLoud ? "🚨" : "🚗";
+
+  const toastHtml = `
+    <div id="${toastId}" class="${alertClass}" role="alert">
+      <div class="toast-icon">${icon}</div>
+      <div class="toast-body">
+        <div class="toast-title">
+          ${isLoud ? "⚠️ ALERTA DE NOVA PLACA:" : "Nova Placa:"} <span class="toast-plate-badge">${escapeHtml(plateNumber)}</span>
+        </div>
+        <div class="toast-details">
+          <strong>${escapeHtml(vehicle)}</strong><br>
+          Status: <em>${escapeHtml(plate.status || "autorizado")}</em> &bull; Cadastrado por <strong>${escapeHtml(creator)}</strong>
+        </div>
+        <span class="toast-time">Recebido às ${escapeHtml(time)}</span>
+      </div>
+      <button class="toast-close" onclick="document.getElementById('${toastId}')?.remove()">&times;</button>
+    </div>
+  `;
+
+  container.insertAdjacentHTML("beforeend", toastHtml);
+
+  // Auto-remove after 7 seconds
+  setTimeout(() => {
+    const el = document.getElementById(toastId);
+    if (el) {
+      el.style.opacity = "0";
+      el.style.transform = "translateX(40px)";
+      setTimeout(() => el.remove(), 250);
+    }
+  }, 7000);
 }

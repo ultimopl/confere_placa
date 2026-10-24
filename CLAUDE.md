@@ -36,8 +36,9 @@ Three implementations exist:
 - `web/main.py` — FastAPI application and static files mount.
 - `web/repository.py` — Thread-safe atomic CSV operations, search, and temporary plate validation.
 - `web/auth.py` — RBAC (Admin vs Operador/Portaria), password hashing (PBKDF2-SHA256) and session tokens.
-- `web/routes/` — REST API routers (`auth_routes.py`, `plate_routes.py`, `config_routes.py`).
-- `web/static/` — Single Page Application (HTML5, responsive CSS, vanilla JS with real-time search and expiration badges).
+- `web/chat_manager.py` — Real-time WebSocket connection hub, online user presence, chat history persistence, and plate event broadcasts.
+- `web/routes/` — REST & WebSocket routers (`auth_routes.py`, `plate_routes.py`, `config_routes.py`, `chat_routes.py`).
+- `web/static/` — Single Page Application (HTML5, responsive CSS, vanilla JS with real-time search, Web Audio alerts, floating chat drawer, and expiration badges).
 
 ## Data model
 

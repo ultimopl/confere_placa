@@ -89,6 +89,22 @@ def delete_session(token: str) -> None:
     _sessions.pop(token, None)
 
 
+def get_user_from_token(token: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not token:
+        return None
+    session = _sessions.get(token)
+    if not session:
+        return None
+    try:
+        expires_at = datetime.fromisoformat(session["expires_at"])
+        if datetime.now() > expires_at:
+            _sessions.pop(token, None)
+            return None
+    except Exception:
+        return None
+    return session
+
+
 def get_current_user(
     request: Request,
     token_cookie: Optional[str] = Depends(cookie_scheme),

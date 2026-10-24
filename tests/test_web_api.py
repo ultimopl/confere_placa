@@ -9,7 +9,7 @@ from web.main import app
 from web.auth import init_default_admin, load_users, _sessions
 from web.repository import repository
 from web.config import set_active_csv_path
-
+from web.chat_manager import chat_manager
 
 @pytest.fixture(autouse=True)
 def setup_test_env():
@@ -26,6 +26,8 @@ def setup_test_env():
     set_active_csv_path(test_csv)
     init_default_admin()
     _sessions.clear()
+    chat_manager.clear_history()
+    chat_manager.active_connections.clear()
 
     yield {
         "test_dir": test_dir,
@@ -82,9 +84,9 @@ def test_rbac_operator_restrictions(client):
     # Admin creates an operator
     login_helper(client, "admin", "admin123")
     create_res = client.post("/api/auth/users", json={
-        "username": "porteiro1",
-        "name": "Porteiro Teste",
-        "password": "senha_porteiro",
+        "username": "operador1",
+        "name": "Agente Teste",
+        "password": "senha_operador",
         "role": "operador"
     })
     assert create_res.status_code == 200
@@ -93,7 +95,7 @@ def test_rbac_operator_restrictions(client):
     client.post("/api/auth/logout")
 
     # Login as operator
-    login_helper(client, "porteiro1", "senha_porteiro")
+    login_helper(client, "operador1", "senha_operador")
 
     # Operator CAN search plates
     search_res = client.get("/api/plates?q=ABC")
@@ -304,3 +306,125 @@ def test_cor_and_modelo_support_and_backward_compatibility(client, setup_test_en
         content = f.read()
     assert "CIV1C99;Diretor Comercial (Novo Veículo);autorizado;" in content
     assert ";Preto;Toyota Corolla" in content
+
+
+# ==================== CHAT & REALTIME TESTS ====================
+
+def test_chat_rest_api_and_permissions(client):
+    # Unauthenticated should fail (401)
+    res_unauth = client.get("/api/chat/messages")
+    assert res_unauth.status_code == 401
+
+    token_admin = login_helper(client, "admin", "admin123")
+
+    # Send message via REST
+    send_res = client.post("/api/chat/messages", json={"text": "Olá portaria!"})
+    assert send_res.status_code == 200
+    msg = send_res.json()["message"]
+    assert msg["text"] == "Olá portaria!"
+    assert msg["username"] == "admin"
+    assert msg["role"] == "admin"
+
+    # Get message history
+    get_res = client.get("/api/chat/messages")
+    assert get_res.status_code == 200
+    messages = get_res.json()["messages"]
+    assert len(messages) == 1
+    assert messages[0]["text"] == "Olá portaria!"
+
+    # Operator sends message
+    client.post("/api/auth/users", json={
+        "username": "operador_joao",
+        "name": "João Agente",
+        "password": "senha",
+        "role": "operador"
+    })
+    client.post("/api/auth/logout")
+
+    token_op = login_helper(client, "operador_joao", "senha")
+    send_op = client.post("/api/chat/messages", json={"text": "Copiado, administrativo!"})
+    assert send_op.status_code == 200
+
+    # Operator cannot clear chat history (403)
+    clear_op = client.delete("/api/chat/messages")
+    assert clear_op.status_code == 403
+
+    # Admin clears chat history
+    client.post("/api/auth/logout")
+    login_helper(client, "admin", "admin123")
+    clear_admin = client.delete("/api/chat/messages")
+    assert clear_admin.status_code == 200
+
+    # History is now empty
+    get_res_empty = client.get("/api/chat/messages")
+    assert len(get_res_empty.json()["messages"]) == 0
+
+
+def test_chat_websocket_flow_and_broadcast(client):
+    token = login_helper(client, "admin", "admin123")
+
+    with client.websocket_connect(f"/api/chat/ws?token={token}") as ws:
+        # Upon connecting, server broadcasts users_update
+        first_msg = ws.receive_json()
+        assert first_msg["type"] == "users_update"
+        assert first_msg["count"] >= 1
+        usernames = [u["username"] for u in first_msg["online_users"]]
+        assert "admin" in usernames
+
+        # Send chat message over websocket
+        ws.send_json({"type": "chat_message", "text": "Mensagem via WebSocket teste!"})
+
+        # Receive broadcasted message
+        chat_msg = ws.receive_json()
+        assert chat_msg["type"] == "chat_message"
+        assert chat_msg["text"] == "Mensagem via WebSocket teste!"
+        assert chat_msg["username"] == "admin"
+
+        # Test ping/pong
+        ws.send_json({"type": "ping"})
+        pong_msg = ws.receive_json()
+        assert pong_msg["type"] == "pong"
+
+
+def test_new_plate_broadcast_alert(client):
+    token = login_helper(client, "admin", "admin123")
+
+    with client.websocket_connect(f"/api/chat/ws?token={token}") as ws:
+        # Initial user list
+        init_ws = ws.receive_json()
+        assert init_ws["type"] == "users_update"
+
+        # Register a new plate via REST API
+        add_res = client.post("/api/plates", json={
+            "placa": "ALT1B23",
+            "detalhes": "Visitante Especial",
+            "status": "autorizado",
+            "modelo": "Jeep Compass",
+            "cor": "Azul"
+        })
+        assert add_res.status_code == 200
+
+        # Websocket should receive the new_plate_alert broadcast
+        alert_msg = ws.receive_json()
+        assert alert_msg["type"] == "new_plate_alert"
+        assert alert_msg["plate"]["placa"] == "ALT1B23"
+        assert alert_msg["plate"]["modelo"] == "Jeep Compass"
+        assert alert_msg["created_by"] == "admin"
+        assert alert_msg["loud_alert"] is False
+
+        # Register another plate with loud_alert=True
+        add_res_loud = client.post("/api/plates", json={
+            "placa": "LOD9X99",
+            "detalhes": "Alerta Urgente",
+            "status": "autorizado",
+            "modelo": "Caminhão Baú",
+            "cor": "Branco",
+            "loud_alert": True
+        })
+        assert add_res_loud.status_code == 200
+
+        alert_msg_loud = ws.receive_json()
+        assert alert_msg_loud["type"] == "new_plate_alert"
+        assert alert_msg_loud["plate"]["placa"] == "LOD9X99"
+        assert alert_msg_loud["loud_alert"] is True
+

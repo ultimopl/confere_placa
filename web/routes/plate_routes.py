@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from web.auth import get_current_user, require_admin
+from web.chat_manager import chat_manager
 from web.repository import repository, parse_datetime
 
 router = APIRouter(prefix="/api/plates", tags=["plates"])
@@ -17,6 +18,7 @@ class PlateCreateRequest(BaseModel):
     duration_hours: Optional[int] = None
     cor: str = Field(default="")
     modelo: str = Field(default="")
+    loud_alert: bool = Field(default=False)
 
 
 class PlateUpdateRequest(BaseModel):
@@ -90,7 +92,7 @@ def get_plate(placa: str, user=Depends(get_current_user)):
 
 
 @router.post("")
-def add_plate(req: PlateCreateRequest, admin=Depends(require_admin)):
+async def add_plate(req: PlateCreateRequest, admin=Depends(require_admin)):
     try:
         final_expires = resolve_expiry(req.status, req.expires_at, req.duration_hours)
         record = repository.add_or_update(
@@ -101,6 +103,8 @@ def add_plate(req: PlateCreateRequest, admin=Depends(require_admin)):
             cor=req.cor,
             modelo=req.modelo,
         )
+        # Broadcast alert to all connected users
+        await chat_manager.notify_new_plate(record, admin, loud_alert=req.loud_alert)
         return {
             "ok": True,
             "message": f"Placa {record['placa']} cadastrada com sucesso.",
