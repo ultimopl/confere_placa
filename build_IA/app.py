@@ -33,7 +33,7 @@ class App:
         self.repository = Repository(delimiter=";")
         self.csv_path = None
         self.history_list = []  # [(placa, time_str), ...]
-        self.credits = "{}\nVersão {}\nArquitetura em abas".format(self.APP_NAME, self.VERSION)
+        self.credits = "{}\nVersão {}\nTodos os direitos reservados.".format(self.APP_NAME, self.VERSION)
 
         self.conf_path = os.path.normpath(CONF_PATH)
         self.config = self._load_config()

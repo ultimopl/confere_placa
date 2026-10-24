@@ -1,0 +1,621 @@
+import os
+import shutil
+import tempfile
+from datetime import datetime, timedelta
+import pytest
+from fastapi.testclient import TestClient
+
+from web.main import app
+from web.auth import init_default_admin, load_users, _sessions
+from web.repository import repository
+from web.config import set_active_csv_path
+from web.chat_manager import chat_manager
+import web.auth
+import web.chat_manager
+import web.config
+import web.routes.config_routes
+
+ADMIN_PW = "senha-admin-teste"
+
+
+@pytest.fixture(autouse=True)
+def setup_test_env(monkeypatch):
+    # Use a temporary directory for test data
+    test_dir = tempfile.mkdtemp(prefix="confere_test_")
+    # Never touch the real app.conf / web_data/ files
+    monkeypatch.setattr(web.auth, "USERS_FILE", os.path.join(test_dir, "users.json"))
+    monkeypatch.setattr(web.config, "CONF_PATH", os.path.join(test_dir, "app.conf"))
+    monkeypatch.setattr(web.chat_manager, "CHAT_HISTORY_FILE", os.path.join(test_dir, "chat_history.json"))
+    monkeypatch.setattr(web.routes.config_routes, "DATA_DIR", os.path.join(test_dir, "web_data"))
+    monkeypatch.setattr(repository, "backup_dir", os.path.join(test_dir, "backups"))
+    monkeypatch.setenv("CONFERE_ADMIN_PASSWORD", ADMIN_PW)
+    test_csv = os.path.join(test_dir, "test_plates.csv")
+
+    # Create dummy initial CSV
+    with open(test_csv, "w", encoding="utf-8") as f:
+        f.write("ABC1234;Veículo Teste 1;autorizado;2026-01-01T10:00:00;\n")
+        f.write("XYZ9876;Veículo Bloqueado;não autorizado;2026-01-01T10:00:00;\n")
+
+    repository.load(test_csv)
+    set_active_csv_path(test_csv)
+    init_default_admin()
+    _sessions.clear()
+    chat_manager.clear_history()
+    chat_manager.active_connections.clear()
+
+    yield {
+        "test_dir": test_dir,
+        "test_csv": test_csv,
+    }
+
+    # Teardown
+    if os.path.exists(test_dir):
+        shutil.rmtree(test_dir)
+
+
+@pytest.fixture
+def client():
+    return TestClient(app)
+
+
+def login_helper(client, username, password):
+    res = client.post("/api/auth/login", json={"username": username, "password": password})
+    assert res.status_code == 200
+    token = res.json()["token"]
+    return token
+
+
+# ==================== AUTH & RBAC TESTS ====================
+
+def test_login_success_and_logout(client):
+    res = client.post("/api/auth/login", json={"username": "admin", "password": ADMIN_PW})
+    assert res.status_code == 200
+    data = res.json()
+    assert data["ok"] is True
+    assert data["user"]["username"] == "admin"
+    assert data["user"]["role"] == "admin"
+
+    # Test me endpoint with cookie
+    me_res = client.get("/api/auth/me")
+    assert me_res.status_code == 200
+    assert me_res.json()["user"]["username"] == "admin"
+
+    # Test logout
+    logout_res = client.post("/api/auth/logout")
+    assert logout_res.status_code == 200
+
+    # After logout, me should be 401
+    me_res_after = client.get("/api/auth/me")
+    assert me_res_after.status_code == 401
+
+
+def test_login_invalid_credentials(client):
+    res = client.post("/api/auth/login", json={"username": "admin", "password": "wrongpassword"})
+    assert res.status_code == 401
+
+
+def test_rbac_operator_restrictions(client):
+    # Admin creates an operator
+    login_helper(client, "admin", ADMIN_PW)
+    create_res = client.post("/api/auth/users", json={
+        "username": "operador1",
+        "name": "Agente Teste",
+        "password": "senha_operador",
+        "role": "operador"
+    })
+    assert create_res.status_code == 200
+
+    # Logout admin
+    client.post("/api/auth/logout")
+
+    # Login as operator
+    login_helper(client, "operador1", "senha_operador")
+
+    # Operator CAN search plates
+    search_res = client.get("/api/plates?q=ABC")
+    assert search_res.status_code == 200
+    assert search_res.json()["count"] == 1
+
+    # Operator CANNOT add plate (403)
+    add_res = client.post("/api/plates", json={
+        "placa": "NEW1234",
+        "detalhes": "Tentativa",
+        "status": "autorizado"
+    })
+    assert add_res.status_code == 403
+
+    # Operator CANNOT edit plate (403)
+    edit_res = client.put("/api/plates/ABC1234", json={
+        "detalhes": "Tentativa Edit",
+        "status": "autorizado"
+    })
+    assert edit_res.status_code == 403
+
+    # Operator CANNOT delete plate (403)
+    del_res = client.delete("/api/plates/ABC1234")
+    assert del_res.status_code == 403
+
+    # Operator CANNOT list users (403)
+    users_res = client.get("/api/auth/users")
+    assert users_res.status_code == 403
+
+
+# ==================== PLATES & SEARCH TESTS ====================
+
+def test_add_and_search_plate(client):
+    login_helper(client, "admin", ADMIN_PW)
+
+    # Add Mercosul plate
+    add_res = client.post("/api/plates", json={
+        "placa": "BRA2E19",
+        "detalhes": "Carro Diretoria",
+        "status": "autorizado"
+    })
+    assert add_res.status_code == 200
+    assert add_res.json()["plate"]["placa"] == "BRA2E19"
+
+    # Search query
+    res = client.get("/api/plates?q=BRA2")
+    assert res.status_code == 200
+    assert res.json()["count"] == 1
+    assert res.json()["results"][0]["placa"] == "BRA2E19"
+
+
+def test_invalid_plate_format(client):
+    login_helper(client, "admin", ADMIN_PW)
+
+    # Invalid plate format
+    res = client.post("/api/plates", json={
+        "placa": "INVALIDA999",
+        "detalhes": "Invalida",
+        "status": "autorizado"
+    })
+    assert res.status_code == 400
+    assert "Formato de placa inválido" in res.json()["detail"]
+
+
+def test_temporary_plates_active_and_expired(client):
+    login_helper(client, "admin", ADMIN_PW)
+
+    # 1. Add active temporary plate (+4 hours)
+    res_active = client.post("/api/plates", json={
+        "placa": "TMP1A11",
+        "detalhes": "Visitante Ativo",
+        "status": "autorizado_temp",
+        "duration_hours": 4
+    })
+    assert res_active.status_code == 200
+    assert res_active.json()["plate"]["expired"] is False
+    assert res_active.json()["plate"]["is_authorized"] is True
+
+    # 2. Add expired temporary plate (expired yesterday)
+    yesterday = (datetime.now() - timedelta(days=1)).strftime("%Y-%m-%d %H:%M")
+    res_expired = client.post("/api/plates", json={
+        "placa": "TMP2B22",
+        "detalhes": "Visitante Vencido",
+        "status": "autorizado_temp",
+        "expires_at": yesterday
+    })
+    assert res_expired.status_code == 200
+    assert res_expired.json()["plate"]["expired"] is True
+    assert res_expired.json()["plate"]["is_authorized"] is False
+
+    # 3. Test filter temp_filter=active
+    search_active = client.get("/api/plates?temp_filter=active")
+    assert search_active.status_code == 200
+    placas = [p["placa"] for p in search_active.json()["results"]]
+    assert "TMP1A11" in placas
+    assert "TMP2B22" not in placas
+
+    # 4. Test filter temp_filter=expired
+    search_exp = client.get("/api/plates?temp_filter=expired")
+    assert search_exp.status_code == 200
+    placas_exp = [p["placa"] for p in search_exp.json()["results"]]
+    assert "TMP2B22" in placas_exp
+    assert "TMP1A11" not in placas_exp
+
+
+def test_soft_delete_plate(client):
+    login_helper(client, "admin", ADMIN_PW)
+
+    # Verify plate exists
+    get_res = client.get("/api/plates/ABC1234")
+    assert get_res.status_code == 200
+
+    # Delete plate
+    del_res = client.delete("/api/plates/ABC1234")
+    assert del_res.status_code == 200
+
+    # Search should no longer return it
+    search_res = client.get("/api/plates?q=ABC1234")
+    assert search_res.status_code == 200
+    assert search_res.json()["count"] == 0
+
+    # Direct get should return 404
+    get_after = client.get("/api/plates/ABC1234")
+    assert get_after.status_code == 404
+
+
+def test_history_and_stats(client):
+    login_helper(client, "admin", ADMIN_PW)
+
+    # Search queries create history
+    client.get("/api/plates?q=BUSCA1")
+    client.get("/api/plates?q=BUSCA2")
+
+    hist_res = client.get("/api/plates/history")
+    assert hist_res.status_code == 200
+    queries = [h["query"] for h in hist_res.json()["history"]]
+    assert "BUSCA2" in queries
+    assert "BUSCA1" in queries
+
+    # Clear history
+    clear_res = client.delete("/api/plates/history")
+    assert clear_res.status_code == 200
+    hist_after = client.get("/api/plates/history")
+    assert len(hist_after.json()["history"]) == 0
+
+    # Stats endpoint
+    stats_res = client.get("/api/config")
+    assert stats_res.status_code == 200
+    assert "total" in stats_res.json()["stats"]
+
+
+def test_index_html_served(client):
+    res = client.get("/")
+    assert res.status_code == 200
+    assert "Confere Placa" in res.text
+    assert "modal-login" in res.text
+
+
+def test_cor_and_modelo_support_and_backward_compatibility(client, setup_test_env):
+    login_helper(client, "admin", ADMIN_PW)
+
+    # 1. Existing plates from setup_test_env (legacy 4 columns without cor/modelo) load seamlessly
+    res_legacy = client.get("/api/plates/ABC1234")
+    assert res_legacy.status_code == 200
+    plate_legacy = res_legacy.json()["plate"]
+    assert plate_legacy["cor"] == ""
+    assert plate_legacy["modelo"] == ""
+
+    # 2. Add plate with modelo and cor
+    add_res = client.post("/api/plates", json={
+        "placa": "CIV1C99",
+        "detalhes": "Diretor Comercial",
+        "status": "autorizado",
+        "modelo": "Honda Civic",
+        "cor": "Prata Metálico",
+    })
+    assert add_res.status_code == 200
+    plate_new = add_res.json()["plate"]
+    assert plate_new["modelo"] == "Honda Civic"
+    assert plate_new["cor"] == "Prata Metálico"
+
+    # 3. Search by modelo
+    search_modelo = client.get("/api/plates?q=Civic")
+    assert search_modelo.status_code == 200
+    assert search_modelo.json()["count"] == 1
+    assert search_modelo.json()["results"][0]["placa"] == "CIV1C99"
+
+    # 4. Search by cor
+    search_cor = client.get("/api/plates?q=Prata")
+    assert search_cor.status_code == 200
+    assert search_cor.json()["count"] == 1
+    assert search_cor.json()["results"][0]["placa"] == "CIV1C99"
+
+    # 5. Edit modelo and cor
+    edit_res = client.put("/api/plates/CIV1C99", json={
+        "detalhes": "Diretor Comercial (Novo Veículo)",
+        "status": "autorizado",
+        "modelo": "Toyota Corolla",
+        "cor": "Preto",
+    })
+    assert edit_res.status_code == 200
+    plate_updated = edit_res.json()["plate"]
+    assert plate_updated["modelo"] == "Toyota Corolla"
+    assert plate_updated["cor"] == "Preto"
+
+    # 6. Check CSV persistence: read raw file
+    with open(setup_test_env["test_csv"], "r", encoding="utf-8") as f:
+        content = f.read()
+    assert "CIV1C99;Diretor Comercial (Novo Veículo);autorizado;" in content
+    assert ";Preto;Toyota Corolla" in content
+
+
+# ==================== CHAT & REALTIME TESTS ====================
+
+def test_chat_rest_api_and_permissions(client):
+    # Unauthenticated should fail (401)
+    res_unauth = client.get("/api/chat/messages")
+    assert res_unauth.status_code == 401
+
+    token_admin = login_helper(client, "admin", ADMIN_PW)
+
+    # Send message via REST
+    send_res = client.post("/api/chat/messages", json={"text": "Olá portaria!"})
+    assert send_res.status_code == 200
+    msg = send_res.json()["message"]
+    assert msg["text"] == "Olá portaria!"
+    assert msg["username"] == "admin"
+    assert msg["role"] == "admin"
+
+    # Get message history
+    get_res = client.get("/api/chat/messages")
+    assert get_res.status_code == 200
+    messages = get_res.json()["messages"]
+    assert len(messages) == 1
+    assert messages[0]["text"] == "Olá portaria!"
+
+    # Operator sends message
+    client.post("/api/auth/users", json={
+        "username": "operador_joao",
+        "name": "João Agente",
+        "password": "senha",
+        "role": "operador"
+    })
+    client.post("/api/auth/logout")
+
+    token_op = login_helper(client, "operador_joao", "senha")
+    send_op = client.post("/api/chat/messages", json={"text": "Copiado, administrativo!"})
+    assert send_op.status_code == 200
+
+    # Operator cannot clear chat history (403)
+    clear_op = client.delete("/api/chat/messages")
+    assert clear_op.status_code == 403
+
+    # Admin clears chat history
+    client.post("/api/auth/logout")
+    login_helper(client, "admin", ADMIN_PW)
+    clear_admin = client.delete("/api/chat/messages")
+    assert clear_admin.status_code == 200
+
+    # History is now empty
+    get_res_empty = client.get("/api/chat/messages")
+    assert len(get_res_empty.json()["messages"]) == 0
+
+
+def test_chat_websocket_flow_and_broadcast(client):
+    token = login_helper(client, "admin", ADMIN_PW)
+
+    with client.websocket_connect(f"/api/chat/ws?token={token}") as ws:
+        # Upon connecting, server broadcasts users_update
+        first_msg = ws.receive_json()
+        assert first_msg["type"] == "users_update"
+        assert first_msg["count"] >= 1
+        usernames = [u["username"] for u in first_msg["online_users"]]
+        assert "admin" in usernames
+
+        # Send chat message over websocket
+        ws.send_json({"type": "chat_message", "text": "Mensagem via WebSocket teste!"})
+
+        # Receive broadcasted message
+        chat_msg = ws.receive_json()
+        assert chat_msg["type"] == "chat_message"
+        assert chat_msg["text"] == "Mensagem via WebSocket teste!"
+        assert chat_msg["username"] == "admin"
+
+        # Test ping/pong
+        ws.send_json({"type": "ping"})
+        pong_msg = ws.receive_json()
+        assert pong_msg["type"] == "pong"
+
+
+def test_new_plate_broadcast_alert(client):
+    token = login_helper(client, "admin", ADMIN_PW)
+
+    with client.websocket_connect(f"/api/chat/ws?token={token}") as ws:
+        # Initial user list
+        init_ws = ws.receive_json()
+        assert init_ws["type"] == "users_update"
+
+        # Register a new plate via REST API
+        add_res = client.post("/api/plates", json={
+            "placa": "ALT1B23",
+            "detalhes": "Visitante Especial",
+            "status": "autorizado",
+            "modelo": "Jeep Compass",
+            "cor": "Azul"
+        })
+        assert add_res.status_code == 200
+
+        # Websocket should receive the new_plate_alert broadcast
+        alert_msg = ws.receive_json()
+        assert alert_msg["type"] == "new_plate_alert"
+        assert alert_msg["plate"]["placa"] == "ALT1B23"
+        assert alert_msg["plate"]["modelo"] == "Jeep Compass"
+        assert alert_msg["created_by"] == "admin"
+        assert alert_msg["loud_alert"] is False
+
+        # Register another plate with loud_alert=True
+        add_res_loud = client.post("/api/plates", json={
+            "placa": "LOD9X99",
+            "detalhes": "Alerta Urgente",
+            "status": "autorizado",
+            "modelo": "Caminhão Baú",
+            "cor": "Branco",
+            "loud_alert": True
+        })
+        assert add_res_loud.status_code == 200
+
+        alert_msg_loud = ws.receive_json()
+        assert alert_msg_loud["type"] == "new_plate_alert"
+        assert alert_msg_loud["plate"]["placa"] == "LOD9X99"
+        assert alert_msg_loud["loud_alert"] is True
+
+
+
+# ==================== SECURITY REGRESSION TESTS ====================
+
+def test_default_admin_has_no_hardcoded_password(client, monkeypatch, capsys):
+    # Fresh install without env var: random password, printed once, admin123 rejected
+    os.remove(web.auth.USERS_FILE)
+    monkeypatch.delenv("CONFERE_ADMIN_PASSWORD")
+    init_default_admin()
+    out = capsys.readouterr().out
+    assert "admin123" not in out
+    assert client.post("/api/auth/login", json={"username": "admin", "password": "admin123"}).status_code == 401
+    printed_pw = out.split("criada: ")[1].split()[0]
+    login_helper(client, "admin", printed_pw)
+
+
+def test_legacy_admin123_is_rotated_and_deleted_admin_not_recreated(client):
+    users = load_users()
+    salt = users["admin"]["salt"]
+    users["admin"]["password_hash"] = web.auth._hash_password("admin123", salt)
+    web.auth.save_users(users)
+    init_default_admin()
+    assert client.post("/api/auth/login", json={"username": "admin", "password": "admin123"}).status_code == 401
+    login_helper(client, "admin", ADMIN_PW)
+
+    # Deleting 'admin' (with another admin present) must not resurrect it on restart
+    web.auth.create_or_update_user("chefe", "Chefe", "senha_chefe", "admin")
+    web.auth.delete_user("admin", current_admin="chefe")
+    init_default_admin()
+    assert "admin" not in load_users()
+
+
+def test_upload_csv_filename_traversal_is_neutralized(client, setup_test_env):
+    data_dir = web.routes.config_routes.DATA_DIR
+    login_helper(client, "admin", ADMIN_PW)
+
+    outside = os.path.join(setup_test_env["test_dir"], "escaped.csv")
+    for evil in ("../../escaped.csv", outside, "..\\..\\escaped.csv"):
+        res = client.post(
+            "/api/config/upload-csv",
+            files={"file": (evil, b"ABC1234;x;autorizado;2026-01-01T10:00:00;\n", "text/csv")},
+        )
+        assert res.status_code == 200
+    assert not os.path.exists(outside)
+    assert os.listdir(os.path.join(data_dir, "uploads")) == ["escaped.csv"]
+
+
+def test_sessions_revoked_on_delete_demote_and_password_change(client):
+    web.auth.create_or_update_user("gerente", "Gerente", "senha_gerente", "admin")
+    other = TestClient(app)
+    login_helper(other, "gerente", "senha_gerente")
+    assert other.get("/api/auth/users").status_code == 200
+
+    # Demotion takes effect immediately
+    web.auth.create_or_update_user("gerente", "Gerente", None, "operador")
+    assert other.get("/api/auth/users").status_code == 403
+
+    # Admin password reset kills existing sessions
+    web.auth.create_or_update_user("gerente", "Gerente", "nova_senha", "operador")
+    assert other.get("/api/auth/me").status_code == 401
+
+    # Deletion kills existing sessions
+    login_helper(other, "gerente", "nova_senha")
+    web.auth.delete_user("gerente", current_admin="admin")
+    assert other.get("/api/auth/me").status_code == 401
+
+    # Own password change keeps the caller logged in with a fresh session, old token dies
+    old_token = login_helper(client, "admin", ADMIN_PW)
+    res = client.post("/api/auth/change-password", json={"old_password": ADMIN_PW, "new_password": "outra_senha"})
+    assert res.status_code == 200
+    assert client.get("/api/auth/me").status_code == 200
+    stale = TestClient(app).get("/api/auth/me", headers={"Authorization": f"Bearer {old_token}"})
+    assert stale.status_code == 401
+
+
+def test_corrupt_users_file_is_never_overwritten(client):
+    with open(web.auth.USERS_FILE, "w", encoding="utf-8") as f:
+        f.write('{"admin": {"username": "adm')  # truncated JSON
+    with open(web.auth.USERS_FILE, "rb") as f:
+        original = f.read()
+
+    with pytest.raises(RuntimeError):
+        init_default_admin()
+    with pytest.raises(RuntimeError):
+        web.auth.create_or_update_user("novo", "Novo", "senha_nova", "operador")
+    with pytest.raises(RuntimeError):
+        client.post("/api/auth/login", json={"username": "admin", "password": ADMIN_PW})
+
+    with open(web.auth.USERS_FILE, "rb") as f:
+        assert f.read() == original
+
+
+# ==================== CSV DATA SAFETY TESTS ====================
+
+def test_backup_before_each_save_with_retention(client, setup_test_env, monkeypatch):
+    monkeypatch.setattr(repository, "MAX_BACKUPS", 3)
+    backup_dir = repository.backup_dir
+    os.makedirs(backup_dir)
+    other = os.path.join(backup_dir, "outro-20260101-000000-000000.csv")  # other file's backup: never pruned
+    open(other, "w").close()
+    with open(setup_test_env["test_csv"], "rb") as f:
+        original = f.read()
+
+    login_helper(client, "admin", ADMIN_PW)
+    for placa in ("AAA1111", "BBB2222", "CCC3333", "DDD4444", "EEE5555"):
+        assert client.post("/api/plates", json={"placa": placa, "status": "autorizado"}).status_code == 200
+
+    backups = sorted(f for f in os.listdir(backup_dir) if f.startswith("test_plates-"))
+    assert len(backups) == 3
+    assert os.path.exists(other)
+    # Oldest kept backup is the state before the 3rd save: original + AAA + BBB
+    with open(os.path.join(backup_dir, backups[0]), encoding="utf-8") as f:
+        content = f.read()
+    assert "BBB2222" in content and "CCC3333" not in content
+
+    # The very first backup (pruned now) would equal the original file; check with a fresh save
+    monkeypatch.setattr(repository, "MAX_BACKUPS", 200)
+    with open(setup_test_env["test_csv"], "wb") as f:
+        f.write(original)
+    client.delete("/api/plates/ABC1234")
+    newest = sorted(f for f in os.listdir(backup_dir) if f.startswith("test_plates-"))[-1]
+    with open(os.path.join(backup_dir, newest), "rb") as f:
+        assert f.read() == original
+
+
+def test_windows_1252_and_bom_csv_load_without_corruption(client, setup_test_env):
+    test_csv = setup_test_env["test_csv"]
+    with open(test_csv, "wb") as f:
+        f.write("ABC1234;João Ônibus;não autorizado;2026-01-01T10:00:00;\n".encode("cp1252"))
+    repository.load(test_csv)
+    login_helper(client, "admin", ADMIN_PW)
+    rec = client.get("/api/plates/ABC1234").json()["plate"]
+    assert rec["detalhes"] == "João Ônibus"
+    assert rec["status"] == "não autorizado"
+
+    # Saving rewrites it as UTF-8, which the desktop apps read
+    client.post("/api/plates", json={"placa": "NEW1A23", "status": "autorizado"})
+    with open(test_csv, encoding="utf-8") as f:
+        assert "João Ônibus;não autorizado" in f.read()
+
+    # Excel "CSV UTF-8" adds a BOM, which must not end up in the first plate
+    with open(test_csv, "wb") as f:
+        f.write("\ufeffABC1234;Teste;autorizado;2026-01-01T10:00:00;\n".encode("utf-8"))
+    repository.load(test_csv)
+    assert "ABC1234" in repository.data
+
+
+def test_external_csv_edits_are_not_overwritten(client, setup_test_env):
+    test_csv = setup_test_env["test_csv"]
+    login_helper(client, "admin", ADMIN_PW)
+
+    # Desktop app (confere.py) adds a plate while the server is running
+    with open(test_csv, "a", encoding="utf-8") as f:
+        f.write("DSK1234;Cadastrado no desktop;autorizado;2026-01-01T10:00:00;\n")
+    assert client.get("/api/plates?q=DSK1234").json()["count"] == 1
+
+    client.post("/api/plates", json={"placa": "WEB1234", "status": "autorizado"})
+    with open(test_csv, encoding="utf-8") as f:
+        content = f.read()
+    assert "DSK1234" in content and "WEB1234" in content
+
+
+def test_unreadable_csv_is_never_overwritten(client, setup_test_env):
+    test_csv = setup_test_env["test_csv"]
+    login_helper(client, "admin", ADMIN_PW)
+    with open(test_csv, "wb") as f:
+        f.write(b"ABC1234;\x81\x8d;autorizado;\n")  # not valid UTF-8 nor Windows-1252
+    with open(test_csv, "rb") as f:
+        bad = f.read()
+
+    # Reads keep serving the last good data; writes refuse to save over the file
+    assert client.get("/api/plates?q=ABC1234").json()["count"] == 1
+    res = client.post("/api/plates", json={"placa": "NEW1234", "status": "autorizado"})
+    assert res.status_code == 400
+    assert "Codificação" in res.json()["detail"]
+    with open(test_csv, "rb") as f:
+        assert f.read() == bad

@@ -10,7 +10,7 @@ except ImportError:
 
 APP_NOME = "Confere Placa"
 APP_VERSAO = "1.3"  # Atualizada com Histórico
-APP_CREDITOS = "Confere Placa\nVersão {}\nDesenvolvido em Python 3 + Tkinter\nNova funcionalidade: Histórico de placas pesquisadas".format(APP_VERSAO)
+APP_CREDITOS = "Confere Placa\nVersão {}\nTodos os direitos reservados.".format(APP_VERSAO)
 
 STATUS_VALIDOS = ["autorizado", "não autorizado", "para recepção", "para entrega", "autorizado_patio"]
 AUTORIZADO_STATUSES = ["autorizado", "autorizado_patio"]
